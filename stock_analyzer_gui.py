@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import simpledialog, messagebox
 import datetime
+from datetime import timedelta
 import threading
 import time
 import sqlite3
@@ -28,12 +29,13 @@ profile_id_map = {}
 comparison_tree = None
 all_scanned_stocks_tree = None
 notebook = None
-scanner_active = True
 manual_entry_button = None
 delete_holding_button = None
 delete_tradelog_button = None
+scanner_active = True
+next_scan_time_var = None
 
-# --- Manual Stock Entry ---
+# --- Placeholder/Implemented Functions ---
 def handle_manual_stock_entry(): # As implemented
     global selected_profile_id, root_window
     if selected_profile_id is None: messagebox.showerror("Error", "No profile selected.", parent=root_window); return
@@ -125,33 +127,19 @@ def handle_delete_selected_tradelog(): # As implemented
     finally:
         if conn: conn.close()
 
-# --- Helper Function for Profile Rule Display Text ---
-def get_profile_rules_display_text(profile_type: str | None) -> dict:
-    # Standardized Buy Rule for all predefined profiles
+def get_profile_rules_display_text(profile_type: str | None) -> dict: # Updated in Subtask 28
     buy_rule = "Entry: Zacks Rank '1' AND (Style Scores: All 'A' OR Max 1 'B' with rest 'A')."
-    sell_rule = "N/A" # Default for unknown types
-
-    if profile_type == "Cautious":
-        sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid."
-    elif profile_type == "Hesitant":
-        sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 5 OR Score is invalid."
-    elif profile_type == "Brave":
-        sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 6 OR Score is invalid."
-    elif profile_type == "Reckless":
-        sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 7 OR Score is invalid."
-    elif profile_type == "Greedy2Pct":
-        sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid) OR Profit >= 2%."
-    elif profile_type == "Greedy3Pct":
-        sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid) OR Profit >= 3%."
-    elif profile_type == "Greedy4Pct":
-        sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 5 OR Score is invalid) OR Profit >= 4%."
-    elif profile_type is None or profile_type == "N/A (Custom)":
-        buy_rule = "Entry: Rules not predefined for this profile type."
-        sell_rule = "Exit: Rules not predefined for this profile type."
-
+    sell_rule = "N/A"
+    if profile_type == "Cautious": sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid."
+    elif profile_type == "Hesitant": sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 5 OR Score is invalid."
+    elif profile_type == "Brave": sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 6 OR Score is invalid."
+    elif profile_type == "Reckless": sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 7 OR Score is invalid."
+    elif profile_type == "Greedy2Pct": sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid) OR Profit >= 2%."
+    elif profile_type == "Greedy3Pct": sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid) OR Profit >= 3%."
+    elif profile_type == "Greedy4Pct": sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 5 OR Score is invalid) OR Profit >= 4%."
+    elif profile_type is None or profile_type == "N/A (Custom)": buy_rule = "Entry: Rules not predefined."; sell_rule = "Exit: Rules not predefined."
     return {'buy': buy_rule, 'sell': sell_rule}
 
-# --- Profile Management Functions ---
 def load_profiles_into_listbox(): # ... (as before)
     global profiles_listbox, profile_id_map, root_window;
     if not profiles_listbox: return
@@ -325,9 +313,19 @@ def on_closing():global scanner_active,root_window;scanner_active=False;print("G
 
 # --- Main Window Creation ---
 def create_main_window():
-    global root_window,holdings_tree,tradelog_tree,profiles_listbox,notebook,comparison_tree,all_scanned_stocks_tree,total_return_label_var,total_trades_label_var,winning_trades_label_var,losing_trades_label_var,buy_rule_text_var,sell_rule_text_var,manual_entry_button, delete_holding_button, delete_tradelog_button
+    global root_window,holdings_tree,tradelog_tree,profiles_listbox,notebook,comparison_tree,all_scanned_stocks_tree,total_return_label_var,total_trades_label_var,winning_trades_label_var,losing_trades_label_var,buy_rule_text_var,sell_rule_text_var,manual_entry_button, delete_holding_button, delete_tradelog_button, next_scan_time_var # Added next_scan_time_var
     root=tk.Tk();root_window=root;root.title("Stock Analyzer");root.geometry("1400x950");root.protocol("WM_DELETE_WINDOW",on_closing)
-    top_ctrl=ttk.Frame(root,padding="5");top_ctrl.pack(side=tk.TOP,fill=tk.X,pady=(5,0))
+
+    # Initialize next_scan_time_var ( StringVar for the label)
+    next_scan_time_var = tk.StringVar(value="Next scan: Calculating...")
+
+    # Status Bar Frame for Next Scan Time Label
+    status_bar_frame = ttk.Frame(root, padding="2")
+    status_bar_frame.pack(side=tk.TOP, fill=tk.X, pady=(0,2), padx=2) # Pack at very top
+    next_scan_label = ttk.Label(status_bar_frame, textvariable=next_scan_time_var, font=('Helvetica', 9, 'italic'))
+    next_scan_label.pack(side=tk.LEFT, padx=(3,0))
+
+    top_ctrl=ttk.Frame(root,padding="5");top_ctrl.pack(side=tk.TOP,fill=tk.X,pady=(5,0)) # This was TOP, changed from (5,0)
     prof_frm_cont=ttk.LabelFrame(top_ctrl,text="Profiles",padding="10");prof_frm_cont.pack(side=tk.LEFT,padx=5,fill=tk.Y)
     prof_lst_sb_frm=ttk.Frame(prof_frm_cont);prof_lst_sb_frm.pack(pady=5,expand=True,fill=tk.BOTH);profiles_listbox=tk.Listbox(prof_lst_sb_frm,exportselection=False,height=10,width=35)
     prof_sb=ttk.Scrollbar(prof_lst_sb_frm,orient=tk.VERTICAL,command=profiles_listbox.yview);profiles_listbox.configure(yscrollcommand=prof_sb.set);profiles_listbox.pack(side=tk.LEFT,expand=True,fill=tk.BOTH);prof_sb.pack(side=tk.RIGHT,fill=tk.Y);profiles_listbox.bind("<<ListboxSelect>>",on_profile_select)
@@ -354,7 +352,7 @@ def create_main_window():
     ttk.Label(stats_frm,text="Return % based on available prices.",font=('Helvetica',8,'italic')).pack(pady=(5,0),anchor=tk.W)
     rules_disp_frm=ttk.LabelFrame(s_r_frm,text="Profile Rules Summary",padding="10");rules_disp_frm.pack(fill=tk.BOTH,expand=True,padx=5,pady=5,anchor='n');buy_rule_text_var=tk.StringVar(value="N/A");sell_rule_text_var=tk.StringVar(value="N/A")
     ttk.Label(rules_disp_frm,text="Buy:",font=('Helvetica',10,'bold')).pack(anchor=tk.W);ttk.Label(rules_disp_frm,textvariable=buy_rule_text_var,wraplength=350,justify=tk.LEFT).pack(fill=tk.X,pady=(0,5));ttk.Label(rules_disp_frm,text="Sell:",font=('Helvetica',10,'bold')).pack(anchor=tk.W);ttk.Label(rules_disp_frm,textvariable=sell_rule_text_var,wraplength=350,justify=tk.LEFT).pack(fill=tk.X)
-    comp_tab=ttk.Frame(notebook);notebook.add(comp_tab,text="Comparison");comp_frm=ttk.LabelFrame(comp_tab,text="Profile Performance",padding="10");comp_frm.pack(expand=True,fill=tk.BOTH,padx=10,pady=10);comp_cols=("Profile","Trades","Won","Lost","Return %");comparison_tree=ttk.Treeview(comp_frm,columns=comp_cols,show="headings")
+    comparison_tab=ttk.Frame(notebook);notebook.add(comparison_tab,text="Comparison");comp_frm=ttk.LabelFrame(comp_tab,text="Profile Performance",padding="10");comp_frm.pack(expand=True,fill=tk.BOTH,padx=10,pady=10);comp_cols=("Profile","Trades","Won","Lost","Return %");comparison_tree=ttk.Treeview(comp_frm,columns=comp_cols,show="headings")
     for c in comp_cols:w=250 if "Profile"==c else 150;comparison_tree.heading(c,text=c);comparison_tree.column(c,width=w,anchor=tk.W if "Profile"==c else tk.CENTER,stretch="Profile"==c)
     comp_vsb=ttk.Scrollbar(comp_frm,orient="vertical",command=comparison_tree.yview);comp_hsb=ttk.Scrollbar(comp_frm,orient="horizontal",command=comparison_tree.xview);comparison_tree.configure(yscrollcommand=comp_vsb.set,xscrollcommand=comp_hsb.set);comp_vsb.pack(side=tk.RIGHT,fill=tk.Y);comp_hsb.pack(side=tk.BOTTOM,fill=tk.X);comparison_tree.pack(expand=True,fill=tk.BOTH)
     all_scan_tab=ttk.Frame(notebook);notebook.add(all_scan_tab,text="All Scanned");scan_lf=ttk.LabelFrame(all_scan_tab,text="Last Scan Results",padding="10");scan_lf.pack(expand=True,fill=tk.BOTH,padx=10,pady=10);scan_cols=("Co Name","Ticker","Z Rank","Val","Gro","Mom","VGM","URL");all_scanned_stocks_tree=ttk.Treeview(scan_lf,columns=scan_cols,show="headings")
