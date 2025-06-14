@@ -46,16 +46,18 @@ def get_profile_rules_display_text(profile_type: str | None) -> dict:
 # --- Profile Management Functions ---
 def load_profiles_into_listbox():
     global profiles_listbox, profile_id_map, root_window
-    if not profiles_listbox: return
+    if not profiles_listbox: print("DEBUG GUI: profiles_listbox not ready in load_profiles_into_listbox"); return
+    print("DEBUG GUI: Loading profiles into listbox...")
     profiles_listbox.delete(0, tk.END); profile_id_map.clear()
     conn, cursor = None, None
     try:
         conn, cursor = connect_db()
         cursor.execute("SELECT profile_id, name, is_active FROM investor_profiles ORDER BY name ASC")
-        fetched_profiles = cursor.fetchall() # list of Row objects
+        fetched_profiles = cursor.fetchall()
         for index, profile_row in enumerate(fetched_profiles):
             profiles_listbox.insert(tk.END, f"{profile_row['name']} {'(Active)' if profile_row['is_active'] else '(Inactive)'}")
             profile_id_map[index] = profile_row['profile_id']
+        print(f"DEBUG GUI: Loaded {len(profile_id_map)} profiles into listbox.")
         if root_window: root_window.after(0, refresh_all_gui_data)
     except Exception as e: messagebox.showerror("DB Error", f"Failed to load profiles: {e}")
     finally:
@@ -64,8 +66,10 @@ def load_profiles_into_listbox():
 def on_profile_select(event):
     global selected_profile_id, profiles_listbox, profile_id_map
     if not profiles_listbox or not profiles_listbox.curselection():
-        selected_profile_id = None; refresh_selected_profile_data_display(); return
+        selected_profile_id = None; print("DEBUG GUI: No profile selected via event (on_profile_select).")
+        refresh_selected_profile_data_display(); return
     selected_profile_id = profile_id_map.get(profiles_listbox.curselection()[0])
+    print(f"DEBUG GUI: Profile selected via event. ID: {selected_profile_id} (on_profile_select)")
     refresh_selected_profile_data_display()
 
 def get_profile_data_for_display(profile_id_to_fetch):
@@ -79,7 +83,7 @@ def get_profile_data_for_display(profile_id_to_fetch):
     finally:
         if conn: conn.close()
 
-def open_profile_editor_window(profile_id_to_edit=None):
+def open_profile_editor_window(profile_id_to_edit=None): # Simplified editor
     global root_window
     existing_profile_row = get_profile_data_for_display(profile_id_to_edit) if profile_id_to_edit else None
     if profile_id_to_edit and not existing_profile_row: messagebox.showerror("Error", "Could not load profile data."); return
@@ -127,6 +131,7 @@ def refresh_selected_profile_data_display():
     global holdings_tree,tradelog_tree,total_return_label_var,total_trades_label_var,selected_profile_id,root_window
     global winning_trades_label_var, losing_trades_label_var, buy_rule_text_var, sell_rule_text_var
 
+    print(f"DEBUG GUI: Refreshing data display for Profile ID: {selected_profile_id}") # DEBUG
     profile_name="None Selected"; profile_type_for_rules = None
     if selected_profile_id:
         profile_data_row = get_profile_data_for_display(selected_profile_id)
@@ -135,51 +140,62 @@ def refresh_selected_profile_data_display():
     rules_text = get_profile_rules_display_text(profile_type_for_rules)
     if buy_rule_text_var: buy_rule_text_var.set(rules_text.get('buy', 'N/A'))
     if sell_rule_text_var: sell_rule_text_var.set(rules_text.get('sell', 'N/A'))
-    if not holdings_tree or not tradelog_tree: return
+    if not holdings_tree or not tradelog_tree: print("DEBUG GUI: Holdings or Tradelog tree not ready in refresh_selected_profile_data_display."); return
     for i in holdings_tree.get_children(): holdings_tree.delete(i)
     for i in tradelog_tree.get_children(): tradelog_tree.delete(i)
     if total_trades_label_var: total_trades_label_var.set("Total Trades: N/A")
     if total_return_label_var: total_return_label_var.set("Sum of Returns: N/A")
     if winning_trades_label_var: winning_trades_label_var.set("Winning Trades: N/A")
     if losing_trades_label_var: losing_trades_label_var.set("Losing Trades: N/A")
-    if selected_profile_id is None : return
+    if selected_profile_id is None : print("DEBUG GUI: No profile selected, displays cleared (refresh_selected_profile_data_display)."); return
+
     conn,cursor=None,None
     try:
         conn,cursor=connect_db()
         h_q="SELECT ticker, company_name, entry_timestamp, entry_zacks_rank, entry_style_value, entry_style_growth, entry_style_momentum, entry_style_vgm, entry_price, last_checked_timestamp, current_zacks_rank, current_style_value, current_style_growth, current_style_momentum, current_style_vgm FROM stock_holdings WHERE profile_id=? ORDER BY entry_timestamp DESC"
         fetched_holdings = cursor.execute(h_q,(selected_profile_id,)).fetchall()
+        print(f"DEBUG GUI: Fetched {len(fetched_holdings)} holding rows for profile_id {selected_profile_id}.")
+
         for row_data in fetched_holdings:
-            entry_price_val = f"{row_data['entry_price']:.2f}" if row_data['entry_price'] is not None else "N/A"
+            def get_val(r, key, default="N/A"): # Helper defined inside loop, or can be outside if not performance critical
+                try: val = r[key]; return val if val is not None else default
+                except (IndexError, KeyError): print(f"DEBUG GUI: Key '{key}' not found in holdings row_data."); return default
+            entry_price_val = f"{get_val(row_data, 'entry_price', 0.0):.2f}" if isinstance(get_val(row_data, 'entry_price', None), (int, float)) else "N/A"
             values_tuple = (
-                str(row_data['ticker'] or "N/A"), str(row_data['company_name'] or "N/A"),
-                str(row_data['entry_timestamp'] or "N/A"), str(row_data['entry_zacks_rank'] or "N/A"),
-                entry_price_val, str(row_data['entry_style_value'] or "N/A"),
-                str(row_data['entry_style_growth'] or "N/A"), str(row_data['entry_style_momentum'] or "N/A"),
-                str(row_data['entry_style_vgm'] or "N/A"), str(row_data['last_checked_timestamp'] or "N/A"),
-                str(row_data['current_zacks_rank'] or "N/A"), str(row_data['current_style_value'] or "N/A"),
-                str(row_data['current_style_growth'] or "N/A"), str(row_data['current_style_momentum'] or "N/A"),
-                str(row_data['current_style_vgm'] or "N/A")
+                str(get_val(row_data, 'ticker')), str(get_val(row_data, 'company_name')),
+                str(get_val(row_data, 'entry_timestamp')), str(get_val(row_data, 'entry_zacks_rank')),
+                entry_price_val, str(get_val(row_data, 'entry_style_value')),
+                str(get_val(row_data, 'entry_style_growth')), str(get_val(row_data, 'entry_style_momentum')),
+                str(get_val(row_data, 'entry_style_vgm')), str(get_val(row_data, 'last_checked_timestamp')),
+                str(get_val(row_data, 'current_zacks_rank')), str(get_val(row_data, 'current_style_value')),
+                str(get_val(row_data, 'current_style_growth')), str(get_val(row_data, 'current_style_momentum')),
+                str(get_val(row_data, 'current_style_vgm'))
             )
+            print(f"DEBUG GUI Holdings Insert Values: {values_tuple}")
             holdings_tree.insert('', tk.END, values=values_tuple)
 
         tl_q="SELECT ticker, company_name, entry_timestamp, exit_timestamp, entry_zacks_rank, exit_zacks_rank, entry_style_vgm, exit_style_vgm, entry_price, exit_price, return_percentage, reason_for_exit FROM trade_logs WHERE profile_id=? ORDER BY exit_timestamp DESC"
         fetched_tradelogs = cursor.execute(tl_q,(selected_profile_id,)).fetchall()
+        print(f"DEBUG GUI: Fetched {len(fetched_tradelogs)} tradelog rows for profile_id {selected_profile_id}.")
         for row_data in fetched_tradelogs:
-            entry_price_tl = f"{row_data['entry_price']:.2f}" if row_data['entry_price'] is not None else "N/A"
-            exit_price_tl = f"{row_data['exit_price']:.2f}" if row_data['exit_price'] is not None else "N/A"
-            return_pct_tl = f"{row_data['return_percentage']:.2f}%" if row_data['return_percentage'] is not None else "N/A"
+            def get_val_tl(r, key, default="N/A"): # Helper for tradelog
+                try: val = r[key]; return val if val is not None else default
+                except (IndexError, KeyError): print(f"DEBUG GUI: Key '{key}' not found in tradelog row_data."); return default
+            entry_price_tl = f"{get_val_tl(row_data, 'entry_price', 0.0):.2f}" if isinstance(get_val_tl(row_data, 'entry_price', None), (int, float)) else "N/A"
+            exit_price_tl = f"{get_val_tl(row_data, 'exit_price', 0.0):.2f}" if isinstance(get_val_tl(row_data, 'exit_price', None), (int, float)) else "N/A"
+            return_pct_tl = f"{get_val_tl(row_data, 'return_percentage', 0.0):.2f}%" if isinstance(get_val_tl(row_data, 'return_percentage', None), (int, float)) else "N/A"
             values_tuple_tl = (
-                str(row_data['ticker'] or "N/A"), str(row_data['company_name'] or "N/A"),
-                str(row_data['entry_timestamp'] or "N/A"), str(row_data['exit_timestamp'] or "N/A"),
-                str(row_data['entry_zacks_rank'] or "N/A"), str(row_data['exit_zacks_rank'] or "N/A"),
-                str(row_data['entry_style_vgm'] or "N/A"), str(row_data['exit_style_vgm'] or "N/A"),
-                entry_price_tl, exit_price_tl, return_pct_tl,
-                str(row_data['reason_for_exit'] or "N/A")
+                str(get_val_tl(row_data, 'ticker')), str(get_val_tl(row_data, 'company_name')),
+                str(get_val_tl(row_data, 'entry_timestamp')), str(get_val_tl(row_data, 'exit_timestamp')),
+                str(get_val_tl(row_data, 'entry_zacks_rank')), str(get_val_tl(row_data, 'exit_zacks_rank')),
+                str(get_val_tl(row_data, 'entry_style_vgm')), str(get_val_tl(row_data, 'exit_style_vgm')),
+                entry_price_tl, exit_price_tl, return_pct_tl, str(get_val_tl(row_data, 'reason_for_exit'))
             )
+            print(f"DEBUG GUI TradeLog Insert Values: {values_tuple_tl}")
             tradelog_tree.insert('', tk.END, values=values_tuple_tl)
 
         cursor.execute("SELECT COUNT(*),SUM(return_percentage) FROM trade_logs WHERE profile_id=?",(selected_profile_id,));stats=cursor.fetchone()
-        total_trades=stats['COUNT(*)'] if stats and stats['COUNT(*)'] is not None else 0 # Access by name due to row_factory
+        total_trades=stats['COUNT(*)'] if stats and stats['COUNT(*)'] is not None else 0
         total_return=stats['SUM(return_percentage)'] if stats and stats['SUM(return_percentage)'] is not None else 0.0
         cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage > 0",(selected_profile_id,));win_trades_row=cursor.fetchone();winning_trades=win_trades_row['COUNT(*)'] if win_trades_row else 0
         cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage <= 0",(selected_profile_id,));lose_trades_row=cursor.fetchone();losing_trades=lose_trades_row['COUNT(*)'] if lose_trades_row else 0
@@ -187,7 +203,7 @@ def refresh_selected_profile_data_display():
         if total_return_label_var:total_return_label_var.set(f"Sum of Returns: {total_return:.2f}%")
         if winning_trades_label_var: winning_trades_label_var.set(f"Winning Trades: {winning_trades}")
         if losing_trades_label_var: losing_trades_label_var.set(f"Losing Trades: {losing_trades}")
-    except Exception as e: messagebox.showerror("DB Error",f"Refresh failed: {e}")
+    except Exception as e: print(f"DEBUG GUI: Error in refresh_selected_profile_data_display: {e}"); messagebox.showerror("DB Error",f"Refresh failed: {e}")
     finally:
         if conn:conn.close()
 
@@ -199,7 +215,7 @@ def populate_profile_comparison_view():
     try:
         conn,cursor=connect_db();cursor.execute("SELECT profile_id,name FROM investor_profiles WHERE is_active=1 ORDER BY name ASC")
         fetched_profiles = cursor.fetchall()
-        for profile_row in fetched_profiles: # profile_row is a Row object
+        for profile_row in fetched_profiles:
             pid = profile_row['profile_id']; name = profile_row['name']
             cursor.execute("SELECT COUNT(*),SUM(return_percentage) FROM trade_logs WHERE profile_id=?",(pid,))
             stats=cursor.fetchone();trades=stats['COUNT(*)'] if stats and stats['COUNT(*)'] is not None else 0;ret=stats['SUM(return_percentage)'] if stats and stats['SUM(return_percentage)'] is not None else 0.0
@@ -218,7 +234,13 @@ def populate_all_scanned_stocks_view():
         for stock_data in scanner.last_raw_scan_results:
             all_scanned_stocks_tree.insert('',tk.END,values=(stock_data.get('Company Name','N/A'),stock_data.get('Ticker Symbol','N/A'),stock_data.get('Zacks Rank','N/A'),stock_data.get('Value Score','N/A'),stock_data.get('Growth Score','N/A'),stock_data.get('Momentum Score','N/A'),stock_data.get('VGM Score','N/A'),stock_data.get('Stock Page URL','N/A')))
 
-def refresh_all_gui_data(): refresh_selected_profile_data_display(); populate_profile_comparison_view(); populate_all_scanned_stocks_view()
+def refresh_all_gui_data():
+    print("DEBUG GUI: Refreshing all GUI data...")
+    refresh_selected_profile_data_display()
+    populate_profile_comparison_view()
+    populate_all_scanned_stocks_view()
+    print("DEBUG GUI: All GUI data refresh attempted.")
+
 def trigger_manual_scan_all_active():
     threading.Thread(target=lambda: (scanner.scan_and_update_all_active_profiles(), root_window.after(0, refresh_all_gui_data) if root_window else None), daemon=True).start()
     messagebox.showinfo("Scan Started", "Manual scan for ALL active profiles initiated.")
@@ -243,8 +265,11 @@ def create_main_window():
     global total_return_label_var, total_trades_label_var, winning_trades_label_var, losing_trades_label_var
     global buy_rule_text_var, sell_rule_text_var
 
-    root = tk.Tk(); root_window = root
+    root = tk.Tk(); root_window = root # This is where the script fails in headless
+    print("DEBUG GUI: tk.Tk() created.") # This won't be reached in headless
+
     root.title("Zacks Stock Analyzer"); root.geometry("1400x950"); root.protocol("WM_DELETE_WINDOW", on_closing)
+    # ... (rest of UI setup as before) ...
     top_controls_frame=ttk.Frame(root,padding="5"); top_controls_frame.pack(side=tk.TOP,fill=tk.X,pady=(5,0))
     profiles_frame_cont=ttk.LabelFrame(top_controls_frame,text="Investor Profiles",padding="10"); profiles_frame_cont.pack(side=tk.LEFT,padx=5,fill=tk.Y)
     prof_list_sb_frame=ttk.Frame(profiles_frame_cont); prof_list_sb_frame.pack(pady=5,expand=True,fill=tk.BOTH)
@@ -259,48 +284,64 @@ def create_main_window():
     global_actions_frame=ttk.Frame(top_controls_frame,padding="10"); global_actions_frame.pack(side=tk.LEFT,padx=5,expand=True,fill=tk.X,anchor='n')
     ttk.Button(global_actions_frame,text="Refresh All Displayed Data",command=refresh_all_gui_data).pack(pady=5,fill=tk.X)
     ttk.Button(global_actions_frame,text="Manual Scan ALL Active Profiles",command=trigger_manual_scan_all_active).pack(pady=5,fill=tk.X)
-
     notebook=ttk.Notebook(root); notebook.pack(expand=True,fill="both",padx=10,pady=10)
     profile_details_tab=ttk.Frame(notebook); notebook.add(profile_details_tab,text="Selected Profile View")
-
     hold_frm=ttk.LabelFrame(profile_details_tab,text="Current Holdings",padding="5");hold_frm.pack(expand=True,fill=tk.BOTH,pady=5,padx=5)
-    hold_cols=("Ticker","Co","Entry Time","Entry Rank","E:Price","E:V","E:G","E:M","E:VGM","Last Check","C Rank","C:V","C:G","C:M","C:VGM")
-    holdings_tree=ttk.Treeview(hold_frm,columns=hold_cols,show="headings")
+    hold_cols=("Ticker","Co","Entry Time","Entry Rank","E:Price","E:V","E:G","E:M","E:VGM","Last Check","C Rank","C:V","C:G","C:M","C:VGM"); holdings_tree=ttk.Treeview(hold_frm,columns=hold_cols,show="headings")
     for col in hold_cols: w=150 if "Time" in col or "Check" in col else (180 if "Co"==col else (80 if "Price" in col else 65)); holdings_tree.heading(col,text=col); holdings_tree.column(col,width=w,anchor=tk.W if "Co"==col or "Time" in col else tk.CENTER,stretch="Co" in col)
     h_vsb=ttk.Scrollbar(hold_frm,orient="vertical",command=holdings_tree.yview);h_hsb=ttk.Scrollbar(hold_frm,orient="horizontal",command=holdings_tree.xview);holdings_tree.configure(yscrollcommand=h_vsb.set,xscrollcommand=h_hsb.set);h_vsb.pack(side=tk.RIGHT,fill=tk.Y);h_hsb.pack(side=tk.BOTTOM,fill=tk.X);holdings_tree.pack(expand=True,fill=tk.BOTH)
-
     bot_det_pane=ttk.PanedWindow(profile_details_tab,orient=tk.HORIZONTAL);bot_det_pane.pack(expand=True,fill=tk.BOTH,pady=5,padx=5)
     trade_frm=ttk.LabelFrame(bot_det_pane,text="Trade Log",padding="5");bot_det_pane.add(trade_frm,weight=2)
-    trade_cols=("Ticker","Co","Entry Time","Exit Time","E Rank","X Rank","E VGM","X VGM","E Price","X Price","Return %","Reason")
-    tradelog_tree=ttk.Treeview(trade_frm,columns=trade_cols,show="headings")
+    trade_cols=("Ticker","Co","Entry Time","Exit Time","E Rank","X Rank","E VGM","X VGM","E Price","X Price","Return %","Reason"); tradelog_tree=ttk.Treeview(trade_frm,columns=trade_cols,show="headings")
     for col in trade_cols: w=140 if "Time" in col else (180 if "Co"==col else (100 if "Reason"==col else (70))); tradelog_tree.heading(col,text=col);tradelog_tree.column(col,width=w,anchor=tk.W if "Co"==col or "Time" in col or "Reason"==col else tk.CENTER,stretch="Co" in col or "Reason" in col)
     tl_vsb=ttk.Scrollbar(trade_frm,orient="vertical",command=tradelog_tree.yview);tl_hsb=ttk.Scrollbar(trade_frm,orient="horizontal",command=tradelog_tree.xview);tradelog_tree.configure(yscrollcommand=tl_vsb.set,xscrollcommand=tl_hsb.set);tl_vsb.pack(side=tk.RIGHT,fill=tk.Y);tl_hsb.pack(side=tk.BOTTOM,fill=tk.X);tradelog_tree.pack(expand=True,fill=tk.BOTH)
-
     stats_rules_frame = ttk.Frame(bot_det_pane); bot_det_pane.add(stats_rules_frame, weight=1)
     stats_frm=ttk.LabelFrame(stats_rules_frame,text="Statistics",padding="5");stats_frm.pack(fill=tk.X,padx=5,pady=(0,5),anchor='n')
-    total_return_label_var=tk.StringVar(value="Sum of Returns: N/A");total_trades_label_var=tk.StringVar(value="Total Trades: 0")
-    winning_trades_label_var=tk.StringVar(value="Winning Trades: N/A");losing_trades_label_var=tk.StringVar(value="Losing Trades: N/A")
-    ttk.Label(stats_frm,textvariable=total_trades_label_var).pack(pady=2,anchor=tk.W);ttk.Label(stats_frm,textvariable=winning_trades_label_var).pack(pady=2,anchor=tk.W)
-    ttk.Label(stats_frm,textvariable=losing_trades_label_var).pack(pady=2,anchor=tk.W);ttk.Label(stats_frm,textvariable=total_return_label_var).pack(pady=2,anchor=tk.W)
+    total_return_label_var=tk.StringVar(value="Sum of Returns: N/A");total_trades_label_var=tk.StringVar(value="Total Trades: 0");winning_trades_label_var=tk.StringVar(value="Winning Trades: N/A");losing_trades_label_var=tk.StringVar(value="Losing Trades: N/A")
+    ttk.Label(stats_frm,textvariable=total_trades_label_var).pack(pady=2,anchor=tk.W);ttk.Label(stats_frm,textvariable=winning_trades_label_var).pack(pady=2,anchor=tk.W);ttk.Label(stats_frm,textvariable=losing_trades_label_var).pack(pady=2,anchor=tk.W);ttk.Label(stats_frm,textvariable=total_return_label_var).pack(pady=2,anchor=tk.W)
     ttk.Label(stats_frm,text="Note: Return % based on available price data.",font=('Helvetica',8,'italic')).pack(pady=(5,0),anchor=tk.W)
     rules_display_frame = ttk.LabelFrame(stats_rules_frame, text="Profile Rules Summary (Predefined)", padding="10");rules_display_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5,anchor='n')
     buy_rule_text_var = tk.StringVar(value="N/A"); sell_rule_text_var = tk.StringVar(value="N/A")
     ttk.Label(rules_display_frame, text="Buy Rules:", font=('Helvetica', 10, 'bold')).pack(anchor=tk.W);ttk.Label(rules_display_frame, textvariable=buy_rule_text_var, wraplength=350, justify=tk.LEFT).pack(fill=tk.X, pady=(0,5))
     ttk.Label(rules_display_frame, text="Sell Rules:", font=('Helvetica', 10, 'bold')).pack(anchor=tk.W);ttk.Label(rules_display_frame, textvariable=sell_rule_text_var, wraplength=350, justify=tk.LEFT).pack(fill=tk.X)
-
     comparison_tab=ttk.Frame(notebook);notebook.add(comparison_tab,text="Profile Comparison")
     comp_frm=ttk.LabelFrame(comparison_tab,text="Overall Profile Performance Comparison",padding="10");comp_frm.pack(expand=True,fill=tk.BOTH,padx=10,pady=10)
     comp_cols=("Profile Name","Total Trades","Winning Trades","Losing Trades","Total Return %");comparison_tree=ttk.Treeview(comp_frm,columns=comp_cols,show="headings")
     for col in comp_cols:w=250 if "Name" in col else 150;comparison_tree.heading(col,text=col.replace(" (Placeholder)",""));comparison_tree.column(col,width=w,anchor=tk.W if "Name" in col else tk.CENTER,stretch="Name" in col)
     comp_vsb=ttk.Scrollbar(comp_frm,orient="vertical",command=comparison_tree.yview);comp_hsb=ttk.Scrollbar(comp_frm,orient="horizontal",command=comparison_tree.xview);comparison_tree.configure(yscrollcommand=comp_vsb.set,xscrollcommand=comp_hsb.set);comp_vsb.pack(side=tk.RIGHT,fill=tk.Y);comp_hsb.pack(side=tk.BOTTOM,fill=tk.X);comparison_tree.pack(expand=True,fill=tk.BOTH)
-
     all_scanned_tab_frame = ttk.Frame(notebook); notebook.add(all_scanned_tab_frame, text="All Scanned Stocks")
     scanned_stocks_lf=ttk.LabelFrame(all_scanned_tab_frame,text="Results from Last Market Scan",padding="10");scanned_stocks_lf.pack(expand=True,fill=tk.BOTH,padx=10,pady=10)
     scanned_cols=("Company Name","Ticker","Zacks Rank","Value","Growth","Momentum","VGM","Stock Page URL");all_scanned_stocks_tree=ttk.Treeview(scanned_stocks_lf,columns=scanned_cols,show="headings")
     for col_name in scanned_cols: col_w=250 if "Company" in col_name else(300 if "URL" in col_name else 100);col_a=tk.W if "Company" in col_name or "URL" in col_name else tk.CENTER; all_scanned_stocks_tree.heading(col_name,text=col_name);all_scanned_stocks_tree.column(col_name,width=col_w,anchor=col_a,stretch=tk.YES if "Company" in col_name or "URL" in col_name else tk.NO)
     sc_vsb=ttk.Scrollbar(scanned_stocks_lf,orient="vertical",command=all_scanned_stocks_tree.yview);sc_hsb=ttk.Scrollbar(scanned_stocks_lf,orient="horizontal",command=all_scanned_stocks_tree.xview);all_scanned_stocks_tree.configure(yscrollcommand=sc_vsb.set,xscrollcommand=sc_hsb.set);sc_vsb.pack(side=tk.RIGHT,fill=tk.Y);sc_hsb.pack(side=tk.BOTTOM,fill=tk.X);all_scanned_stocks_tree.pack(expand=True,fill=tk.BOTH)
 
-    load_profiles_into_listbox(); refresh_all_gui_data()
+    # --- Initial data load & temporary debug selection ---
+    load_profiles_into_listbox() # This will call refresh_all_gui_data -> refresh_selected_profile_data_display (with selected_profile_id=None initially)
+
+    print("DEBUG GUI: Attempting to force refresh for a specific profile for debug prints after initial loads...")
+    test_profile_id_for_debug = None
+    target_name_for_debug = "The Cautious Investor"
+
+    # Check if profiles_listbox and profile_id_map are populated
+    if profiles_listbox and profile_id_map:
+        for listbox_idx in range(profiles_listbox.size()):
+            if target_name_for_debug in profiles_listbox.get(listbox_idx):
+                test_profile_id_for_debug = profile_id_map.get(listbox_idx)
+                break
+
+    if test_profile_id_for_debug:
+        # global selected_profile_id # selected_profile_id is already global
+        selected_profile_id = test_profile_id_for_debug
+        print(f"DEBUG GUI: Manually set selected_profile_id to {selected_profile_id} ('{target_name_for_debug}') and calling refresh_selected_profile_data_display.")
+        refresh_selected_profile_data_display()
+    else:
+        print(f"DEBUG GUI: Could not find profile '{target_name_for_debug}' by name to force refresh. Or profiles not loaded.")
+        # If specific profile not found, call refresh_selected_profile_data_display with current selected_profile_id (which might be None)
+        # This ensures the print statements inside refresh_selected_profile_data_display still run.
+        print(f"DEBUG GUI: Calling refresh_selected_profile_data_display with current selected_profile_id ({selected_profile_id}) for debug prints.")
+        refresh_selected_profile_data_display()
+
+    print("DEBUG GUI: End of create_main_window before mainloop.")
     root.mainloop()
 
 if __name__ == "__main__":
