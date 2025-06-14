@@ -4,18 +4,30 @@
     <title>Sample IHICY Stock Page</title>
 </head>
 <body>
-    <div class="zr_rankbox composite_group">
-        <p class="rank_title">Zacks Style Scores</p>
-        <p class="rank_view">
-            <span class="composite_val">A</span>&nbsp;Value
-            <span class="composite_val">B</span>&nbsp;Growth
-            <span class="composite_val">C</span>&nbsp;Momentum
-            <span class="composite_val composite_val_vgm">A</span>&nbsp;VGM
-        </p>
-        <p class="rank_disclosure">
-            Some disclosure text here.
-        </p>
-    </div>
+    <!-- Simplified Zacks Rank section based on quote_ribbon_v2 -->
+    <section id="quote_ribbon_v2">
+        <div class="quote_rank_summary">
+            <!-- This is typically the first zr_rankbox, for Zacks Rank -->
+            <div class="zr_rankbox">
+                <div class="rank_title">Zacks Rank</div>
+                <p class="rank_view">1-Strong Buy<span class="sr-only"> of 5</span></p>
+            </div>
+
+            <!-- Existing Style Scores section -->
+            <div class="zr_rankbox composite_group">
+                <p class="rank_title">Zacks Style Scores</p>
+                <p class="rank_view">
+                    <span class="composite_val">A</span>&nbsp;Value
+                    <span class="composite_val">B</span>&nbsp;Growth
+                    <span class="composite_val">C</span>&nbsp;Momentum
+                    <span class="composite_val composite_val_vgm">A</span>&nbsp;VGM
+                </p>
+                <p class="rank_disclosure">
+                    Some disclosure text here.
+                </p>
+            </div>
+        </div>
+    </section>
 
     <div class="zr_rankbox some_other_group">
         <p class="rank_title">Other Scores</p>
