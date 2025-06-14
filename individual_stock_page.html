@@ -1,19 +1,22 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Sample IHICY Stock Page</title>
+    <title>International Holding Company PJSC (IHICY) Stock Price, News, Quote & History - Zacks</title>
 </head>
 <body>
-    <!-- Simplified Zacks Rank section based on quote_ribbon_v2 -->
+    <!-- Added for Company Name Extraction Test -->
     <section id="quote_ribbon_v2">
+        <div class="quote_summary"> <!-- Common parent, might be inside quote_ribbon_v2 or similar -->
+            <header>
+                <h1><a href="/stock/quote/IHICY">International Holding Company PJSC (IHICY)</a></h1>
+            </header>
+        </div>
+
         <div class="quote_rank_summary">
-            <!-- This is typically the first zr_rankbox, for Zacks Rank -->
             <div class="zr_rankbox">
                 <div class="rank_title">Zacks Rank</div>
                 <p class="rank_view">1-Strong Buy<span class="sr-only"> of 5</span></p>
             </div>
-
-            <!-- Existing Style Scores section -->
             <div class="zr_rankbox composite_group">
                 <p class="rank_title">Zacks Style Scores</p>
                 <p class="rank_view">
@@ -21,9 +24,6 @@
                     <span class="composite_val">B</span>&nbsp;Growth
                     <span class="composite_val">C</span>&nbsp;Momentum
                     <span class="composite_val composite_val_vgm">A</span>&nbsp;VGM
-                </p>
-                <p class="rank_disclosure">
-                    Some disclosure text here.
                 </p>
             </div>
         </div>
@@ -33,7 +33,6 @@
         <p class="rank_title">Other Scores</p>
         <p class="rank_view">
             <span class="composite_val">D</span>&nbsp;Quality
-            <span class="composite_val">F</span>&nbsp;Balance
         </p>
     </div>
 </body>
