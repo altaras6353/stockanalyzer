@@ -52,9 +52,10 @@ def load_profiles_into_listbox():
     try:
         conn, cursor = connect_db()
         cursor.execute("SELECT profile_id, name, is_active FROM investor_profiles ORDER BY name ASC")
-        for index, (pid, name, is_active_val) in enumerate(cursor.fetchall()):
-            profiles_listbox.insert(tk.END, f"{name} {'(Active)' if is_active_val else '(Inactive)'}")
-            profile_id_map[index] = pid
+        fetched_profiles = cursor.fetchall() # list of Row objects
+        for index, profile_row in enumerate(fetched_profiles):
+            profiles_listbox.insert(tk.END, f"{profile_row['name']} {'(Active)' if profile_row['is_active'] else '(Inactive)'}")
+            profile_id_map[index] = profile_row['profile_id']
         if root_window: root_window.after(0, refresh_all_gui_data)
     except Exception as e: messagebox.showerror("DB Error", f"Failed to load profiles: {e}")
     finally:
@@ -110,12 +111,12 @@ def open_profile_editor_window(profile_id_to_edit=None):
 def delete_selected_profile():
     global selected_profile_id
     if selected_profile_id is None: messagebox.showwarning("No Profile", "No profile selected."); return
-    profile_data = get_profile_data_for_display(selected_profile_id)
-    if not profile_data or not messagebox.askyesno("Confirm Delete",f"Delete '{profile_data['name']}'?\nAll associated data will be removed."): return
+    profile_data_row = get_profile_data_for_display(selected_profile_id)
+    if not profile_data_row or not messagebox.askyesno("Confirm Delete",f"Delete '{profile_data_row['name']}'?\nAll associated data will be removed."): return
     conn,cursor=None,None
     try:
         conn,cursor=connect_db(); cursor.execute("DELETE FROM investor_profiles WHERE profile_id=?",(selected_profile_id,)); conn.commit()
-        messagebox.showinfo("Success",f"Profile '{profile_data['name']}' deleted.")
+        messagebox.showinfo("Success",f"Profile '{profile_data_row['name']}' deleted.")
         load_profiles_into_listbox();selected_profile_id=None;refresh_selected_profile_data_display()
     except Exception as e: messagebox.showerror("DB Error",f"Delete failed: {e}")
     finally:
@@ -125,6 +126,7 @@ def delete_selected_profile():
 def refresh_selected_profile_data_display():
     global holdings_tree,tradelog_tree,total_return_label_var,total_trades_label_var,selected_profile_id,root_window
     global winning_trades_label_var, losing_trades_label_var, buy_rule_text_var, sell_rule_text_var
+
     profile_name="None Selected"; profile_type_for_rules = None
     if selected_profile_id:
         profile_data_row = get_profile_data_for_display(selected_profile_id)
@@ -144,14 +146,43 @@ def refresh_selected_profile_data_display():
     conn,cursor=None,None
     try:
         conn,cursor=connect_db()
-        h_q="SELECT ticker,company_name,entry_timestamp,entry_zacks_rank,entry_style_value,entry_style_growth,entry_style_momentum,entry_style_vgm,entry_price,last_checked_timestamp,current_zacks_rank,current_style_value,current_style_growth,current_style_momentum,current_style_vgm FROM stock_holdings WHERE profile_id=? ORDER BY entry_timestamp DESC"
-        cursor.execute(h_q,(selected_profile_id,));[holdings_tree.insert('',tk.END,values=r) for r in cursor.fetchall()]
-        tl_q="SELECT ticker,company_name,entry_timestamp,exit_timestamp,entry_zacks_rank,exit_zacks_rank,entry_style_vgm,exit_style_vgm,entry_price,exit_price,return_percentage,reason_for_exit FROM trade_logs WHERE profile_id=? ORDER BY exit_timestamp DESC"
-        cursor.execute(tl_q,(selected_profile_id,));[tradelog_tree.insert('',tk.END,values=r) for r in cursor.fetchall()]
+        h_q="SELECT ticker, company_name, entry_timestamp, entry_zacks_rank, entry_style_value, entry_style_growth, entry_style_momentum, entry_style_vgm, entry_price, last_checked_timestamp, current_zacks_rank, current_style_value, current_style_growth, current_style_momentum, current_style_vgm FROM stock_holdings WHERE profile_id=? ORDER BY entry_timestamp DESC"
+        fetched_holdings = cursor.execute(h_q,(selected_profile_id,)).fetchall()
+        for row_data in fetched_holdings:
+            entry_price_val = f"{row_data['entry_price']:.2f}" if row_data['entry_price'] is not None else "N/A"
+            values_tuple = (
+                str(row_data['ticker'] or "N/A"), str(row_data['company_name'] or "N/A"),
+                str(row_data['entry_timestamp'] or "N/A"), str(row_data['entry_zacks_rank'] or "N/A"),
+                entry_price_val, str(row_data['entry_style_value'] or "N/A"),
+                str(row_data['entry_style_growth'] or "N/A"), str(row_data['entry_style_momentum'] or "N/A"),
+                str(row_data['entry_style_vgm'] or "N/A"), str(row_data['last_checked_timestamp'] or "N/A"),
+                str(row_data['current_zacks_rank'] or "N/A"), str(row_data['current_style_value'] or "N/A"),
+                str(row_data['current_style_growth'] or "N/A"), str(row_data['current_style_momentum'] or "N/A"),
+                str(row_data['current_style_vgm'] or "N/A")
+            )
+            holdings_tree.insert('', tk.END, values=values_tuple)
+
+        tl_q="SELECT ticker, company_name, entry_timestamp, exit_timestamp, entry_zacks_rank, exit_zacks_rank, entry_style_vgm, exit_style_vgm, entry_price, exit_price, return_percentage, reason_for_exit FROM trade_logs WHERE profile_id=? ORDER BY exit_timestamp DESC"
+        fetched_tradelogs = cursor.execute(tl_q,(selected_profile_id,)).fetchall()
+        for row_data in fetched_tradelogs:
+            entry_price_tl = f"{row_data['entry_price']:.2f}" if row_data['entry_price'] is not None else "N/A"
+            exit_price_tl = f"{row_data['exit_price']:.2f}" if row_data['exit_price'] is not None else "N/A"
+            return_pct_tl = f"{row_data['return_percentage']:.2f}%" if row_data['return_percentage'] is not None else "N/A"
+            values_tuple_tl = (
+                str(row_data['ticker'] or "N/A"), str(row_data['company_name'] or "N/A"),
+                str(row_data['entry_timestamp'] or "N/A"), str(row_data['exit_timestamp'] or "N/A"),
+                str(row_data['entry_zacks_rank'] or "N/A"), str(row_data['exit_zacks_rank'] or "N/A"),
+                str(row_data['entry_style_vgm'] or "N/A"), str(row_data['exit_style_vgm'] or "N/A"),
+                entry_price_tl, exit_price_tl, return_pct_tl,
+                str(row_data['reason_for_exit'] or "N/A")
+            )
+            tradelog_tree.insert('', tk.END, values=values_tuple_tl)
+
         cursor.execute("SELECT COUNT(*),SUM(return_percentage) FROM trade_logs WHERE profile_id=?",(selected_profile_id,));stats=cursor.fetchone()
-        total_trades=stats[0] if stats and stats[0] is not None else 0;total_return=stats[1] if stats and stats[1] is not None else 0.0
-        cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage > 0",(selected_profile_id,));win_trades_row=cursor.fetchone();winning_trades=win_trades_row[0] if win_trades_row else 0
-        cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage <= 0",(selected_profile_id,));lose_trades_row=cursor.fetchone();losing_trades=lose_trades_row[0] if lose_trades_row else 0
+        total_trades=stats['COUNT(*)'] if stats and stats['COUNT(*)'] is not None else 0 # Access by name due to row_factory
+        total_return=stats['SUM(return_percentage)'] if stats and stats['SUM(return_percentage)'] is not None else 0.0
+        cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage > 0",(selected_profile_id,));win_trades_row=cursor.fetchone();winning_trades=win_trades_row['COUNT(*)'] if win_trades_row else 0
+        cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage <= 0",(selected_profile_id,));lose_trades_row=cursor.fetchone();losing_trades=lose_trades_row['COUNT(*)'] if lose_trades_row else 0
         if total_trades_label_var:total_trades_label_var.set(f"Total Trades: {total_trades}")
         if total_return_label_var:total_return_label_var.set(f"Sum of Returns: {total_return:.2f}%")
         if winning_trades_label_var: winning_trades_label_var.set(f"Winning Trades: {winning_trades}")
@@ -167,11 +198,13 @@ def populate_profile_comparison_view():
     conn,cursor=None,None
     try:
         conn,cursor=connect_db();cursor.execute("SELECT profile_id,name FROM investor_profiles WHERE is_active=1 ORDER BY name ASC")
-        for pid,name in cursor.fetchall():
+        fetched_profiles = cursor.fetchall()
+        for profile_row in fetched_profiles: # profile_row is a Row object
+            pid = profile_row['profile_id']; name = profile_row['name']
             cursor.execute("SELECT COUNT(*),SUM(return_percentage) FROM trade_logs WHERE profile_id=?",(pid,))
-            stats=cursor.fetchone();trades=stats[0] if stats and stats[0] is not None else 0;ret=stats[1] if stats and stats[1] is not None else 0.0
-            cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage > 0",(pid,));win_row=cursor.fetchone();wt=win_row[0] if win_row else 0
-            cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage <= 0",(pid,));lose_row=cursor.fetchone();lt=lose_row[0] if lose_row else 0
+            stats=cursor.fetchone();trades=stats['COUNT(*)'] if stats and stats['COUNT(*)'] is not None else 0;ret=stats['SUM(return_percentage)'] if stats and stats['SUM(return_percentage)'] is not None else 0.0
+            cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage > 0",(pid,));win_row=cursor.fetchone();wt=win_row['COUNT(*)'] if win_row else 0
+            cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage <= 0",(pid,));lose_row=cursor.fetchone();lt=lose_row['COUNT(*)'] if lose_row else 0
             comparison_tree.insert('',tk.END,values=(name,trades,wt,lt,f"{ret:.2f}%"))
     except Exception as e: messagebox.showerror("DB Error",f"Comparison populate failed: {e}")
     finally:
@@ -189,48 +222,22 @@ def refresh_all_gui_data(): refresh_selected_profile_data_display(); populate_pr
 def trigger_manual_scan_all_active():
     threading.Thread(target=lambda: (scanner.scan_and_update_all_active_profiles(), root_window.after(0, refresh_all_gui_data) if root_window else None), daemon=True).start()
     messagebox.showinfo("Scan Started", "Manual scan for ALL active profiles initiated.")
-
-# --- Background Scanner Worker ---
 def hourly_scan_worker():
-    global scanner_active, root_window
-    try:
-        print("BG Scanner: Initializing DB for worker thread...") # Clarified print
-        conn_init,cursor_init=connect_db()
-        create_tables(cursor_init);conn_init.commit()
-        add_predefined_profiles(conn_init,cursor_init) # This ensures 7 profiles are set up
-        conn_init.close(); print("BG Scanner: DB setup confirmed for worker thread.")
+    global scanner_active,root_window; print("BG Scanner: Starting hourly_scan_worker setup...")
+    try: conn_init,cursor_init=connect_db();create_tables(cursor_init);conn_init.commit();add_predefined_profiles(conn_init,cursor_init);conn_init.close(); print("BG Scanner: DB setup confirmed.")
     except Exception as e: print(f"BG Scanner: DB setup error: {e}. Thread stopping."); return
-
     print("BG Scanner: Thread started (scans ALL active profiles).")
     while scanner_active:
-        print(f"\n[{datetime.datetime.now()}] BG Scanner: Starting scheduled scan (ALL active)...")
-        try:
-            scanner.scan_and_update_all_active_profiles()
-            print(f"[{datetime.datetime.now()}] BG Scanner: Hourly scan (ALL active) complete.")
-            if root_window and scanner_active: root_window.after(0, refresh_all_gui_data)
-        except Exception as e: print(f"[{datetime.datetime.now()}] BG Scanner: Error during scan (ALL active): {e}")
-
-        sleep_duration = 3600 # FINAL: 1 hour (3600 seconds)
-        # sleep_duration = 15 # TEST: Short duration for testing
-
-        # Updated print message to reflect actual sleep duration
-        print(f"[{datetime.datetime.now()}] BG Scanner: Next scan in {sleep_duration // 3600} hour(s) ({sleep_duration} seconds).")
-
-        # Interruptible sleep
-        chunk_sleep = 5 # Check every 5 seconds
-        num_chunks = sleep_duration // chunk_sleep
-        for i in range(num_chunks):
-            if not scanner_active: break
-            time.sleep(chunk_sleep)
-        # Remainder sleep if sleep_duration wasn't perfectly divisible by chunk_sleep
-        if scanner_active and (sleep_duration % chunk_sleep > 0) :
-            time.sleep(sleep_duration % chunk_sleep)
-
+        try: scanner.scan_and_update_all_active_profiles(); print(f"[{datetime.datetime.now()}] BG Scanner: Hourly scan complete.")
+        except Exception as e: print(f"[{datetime.datetime.now()}] BG Scanner: Error during scan: {e}")
+        if root_window and scanner_active: root_window.after(0, refresh_all_gui_data)
+        sleep_duration=3600
+        print(f"[{datetime.datetime.now()}] BG Scanner: Next scan in {sleep_duration // 3600} hour(s).")
+        for i in range(max(1,sleep_duration//5)):
+            if not scanner_active: break; time.sleep(min(5,sleep_duration-(i*5) if sleep_duration>(i*5) else 0))
     print("BG Scanner: Thread stopped.")
-
 def on_closing(): global scanner_active,root_window; scanner_active=False; print("GUI: Closing..."); root_window.destroy() if root_window else None
 
-# --- Main Window Creation (Layout as per Subtask 19, only minor text changes if any) ---
 def create_main_window():
     global root_window, holdings_tree, tradelog_tree, profiles_listbox, notebook, comparison_tree, all_scanned_stocks_tree
     global total_return_label_var, total_trades_label_var, winning_trades_label_var, losing_trades_label_var
@@ -266,10 +273,10 @@ def create_main_window():
     trade_frm=ttk.LabelFrame(bot_det_pane,text="Trade Log",padding="5");bot_det_pane.add(trade_frm,weight=2)
     trade_cols=("Ticker","Co","Entry Time","Exit Time","E Rank","X Rank","E VGM","X VGM","E Price","X Price","Return %","Reason")
     tradelog_tree=ttk.Treeview(trade_frm,columns=trade_cols,show="headings")
-    for col in trade_cols: w=140 if "Time" in col else (180 if "Co"==col else (100 if "Reason"==col else (70 if "Price" in col or "Rank" in col or "VGM" in col or "Return" in col else 70))); tradelog_tree.heading(col,text=col);tradelog_tree.column(col,width=w,anchor=tk.W if "Co"==col or "Time" in col or "Reason"==col else tk.CENTER,stretch="Co" in col or "Reason" in col)
+    for col in trade_cols: w=140 if "Time" in col else (180 if "Co"==col else (100 if "Reason"==col else (70))); tradelog_tree.heading(col,text=col);tradelog_tree.column(col,width=w,anchor=tk.W if "Co"==col or "Time" in col or "Reason"==col else tk.CENTER,stretch="Co" in col or "Reason" in col)
     tl_vsb=ttk.Scrollbar(trade_frm,orient="vertical",command=tradelog_tree.yview);tl_hsb=ttk.Scrollbar(trade_frm,orient="horizontal",command=tradelog_tree.xview);tradelog_tree.configure(yscrollcommand=tl_vsb.set,xscrollcommand=tl_hsb.set);tl_vsb.pack(side=tk.RIGHT,fill=tk.Y);tl_hsb.pack(side=tk.BOTTOM,fill=tk.X);tradelog_tree.pack(expand=True,fill=tk.BOTH)
 
-    stats_rules_frame = ttk.Frame(bot_det_pane); bot_det_pane.add(stats_rules_frame, weight=1) # Frame for stats and rules
+    stats_rules_frame = ttk.Frame(bot_det_pane); bot_det_pane.add(stats_rules_frame, weight=1)
     stats_frm=ttk.LabelFrame(stats_rules_frame,text="Statistics",padding="5");stats_frm.pack(fill=tk.X,padx=5,pady=(0,5),anchor='n')
     total_return_label_var=tk.StringVar(value="Sum of Returns: N/A");total_trades_label_var=tk.StringVar(value="Total Trades: 0")
     winning_trades_label_var=tk.StringVar(value="Winning Trades: N/A");losing_trades_label_var=tk.StringVar(value="Losing Trades: N/A")
