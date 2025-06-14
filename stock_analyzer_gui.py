@@ -35,7 +35,8 @@ delete_tradelog_button = None
 scanner_active = True
 next_scan_time_var = None
 
-# --- Helper Function for Profile Rule Display Text ---
+# --- GUI Helper, Command, Event Handler, and Worker Functions ---
+
 def get_profile_rules_display_text(profile_type: str | None) -> dict:
     buy_rule = "Entry: Zacks Rank '1' AND (Style Scores: All 'A' OR Max 1 'B' with rest 'A')."
     sell_rule = "N/A"
@@ -49,105 +50,12 @@ def get_profile_rules_display_text(profile_type: str | None) -> dict:
     elif profile_type is None or profile_type == "N/A (Custom)": buy_rule = "Entry: Rules not predefined."; sell_rule = "Exit: Rules not predefined."
     return {'buy': buy_rule, 'sell': sell_rule}
 
-# --- Data Fetching and Profile Management Logic ---
-def get_profile_data_for_display(pid): # Used by editor and refresh
+def get_profile_data_for_display(pid):
     if pid is None: return None; conn,cur=None,None
     try: conn,cur=connect_db(); cur.execute("SELECT profile_id,name,description,is_active,profile_type FROM investor_profiles WHERE profile_id=?",(pid,)); return cur.fetchone()
     except Exception as e: messagebox.showerror("DB Error",f"Fetch profile failed: {e}"); return None
     finally:
         if conn:conn.close()
-
-# --- GUI Command Handlers & Event Callbacks (Defined before create_main_window) ---
-def handle_manual_stock_entry():
-    global selected_profile_id, root_window
-    if selected_profile_id is None: messagebox.showerror("Error", "No profile selected.", parent=root_window); return
-    ticker_symbol = simpledialog.askstring("Manual Stock Entry", "Enter Ticker Symbol:", parent=root_window)
-    if not ticker_symbol: return
-    ticker_symbol = ticker_symbol.strip().upper()
-    if not ticker_symbol: messagebox.showerror("Error", "Ticker symbol cannot be empty.", parent=root_window); return
-    def fetch_and_add_task(profile_id_local, ticker_local):
-        print(f"MANUAL ENTRY THREAD: Starting for {ticker_local}, Profile ID: {profile_id_local}")
-        url = f"https://www.zacks.com/stock/quote/{ticker_local}"; individual_page_html_content = None
-        try:
-            response_stock = requests.get(url, headers=scanner.HEADERS, timeout=10); response_stock.raise_for_status()
-            individual_page_html_content = response_stock.text
-        except Exception as e_fetch:
-            print(f"MANUAL ENTRY THREAD: Failed live fetch for {ticker_local}: {e_fetch}. Using fallback HTML.")
-            try:
-                with open("individual_stock_page.html", "r", encoding="utf-8") as f: individual_page_html_content = f.read()
-            except FileNotFoundError:
-                if root_window: root_window.after(0, lambda: messagebox.showerror("Error", f"Could not fetch data for {ticker_local} (fallback HTML missing).", parent=root_window)); return
-        ratings_data = extract_stock_ratings(individual_page_html_content); current_zacks_rank_str = ratings_data.get('Zacks Rank')
-        company_name_from_parse = ratings_data.get('Company Name', ticker_local)
-        style_scores_dict = {'Value':ratings_data.get('Value'),'Growth':ratings_data.get('Growth'),'Momentum':ratings_data.get('Momentum'),'VGM':ratings_data.get('VGM')}
-        entry_price = get_current_price(ticker_local)
-        data_missing=False; error_msg_parts=[]
-        if not current_zacks_rank_str: data_missing=True; error_msg_parts.append("- Zacks Rank missing.")
-        if not all(s is not None and s!="N/A" for s in style_scores_dict.values()) or len(style_scores_dict)<4: data_missing=True;error_msg_parts.append("- Some Style Scores missing.")
-        if entry_price is None or entry_price<=0: data_missing=True;error_msg_parts.append("- Valid entry price missing.")
-        if data_missing:
-            if root_window: root_window.after(0,lambda:messagebox.showerror("Error",f"Could not retrieve all data for {ticker_local}:\n"+"\n".join(error_msg_parts),parent=root_window)); return
-        conn_task,cursor_task=connect_db()
-        try:
-            cursor_task.execute("SELECT holding_id FROM stock_holdings WHERE profile_id=? AND ticker=?",(profile_id_local,ticker_local))
-            if cursor_task.fetchone():
-                if root_window:root_window.after(0,lambda:messagebox.showinfo("Info",f"{ticker_local} already in holdings.",parent=root_window)); return
-            now_ts_iso=datetime.datetime.now().isoformat();notes=f"Manually added on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            entry_values=(profile_id_local,ticker_local,company_name_from_parse,now_ts_iso,current_zacks_rank_str,style_scores_dict.get('Value'),style_scores_dict.get('Growth'),style_scores_dict.get('Momentum'),style_scores_dict.get('VGM'),entry_price,now_ts_iso,current_zacks_rank_str,style_scores_dict.get('Value'),style_scores_dict.get('Growth'),style_scores_dict.get('Momentum'),style_scores_dict.get('VGM'),notes)
-            cursor_task.execute("INSERT INTO stock_holdings (profile_id,ticker,company_name,entry_timestamp,entry_zacks_rank,entry_style_value,entry_style_growth,entry_style_momentum,entry_style_vgm,entry_price,last_checked_timestamp,current_zacks_rank,current_style_value,current_style_growth,current_style_momentum,current_style_vgm,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",entry_values)
-            conn_task.commit()
-            if root_window:root_window.after(0,lambda:messagebox.showinfo("Success",f"{ticker_local} added to profile {profile_id_local}.",parent=root_window));root_window.after(0,refresh_all_gui_data)
-        except Exception as e_db:
-            if root_window:root_window.after(0,lambda:messagebox.showerror("DB Error",f"Failed to add {ticker_local}: {e_db}",parent=root_window))
-        finally:
-            if conn_task:conn_task.close()
-    messagebox.showinfo("In Progress",f"Fetching data for {ticker_symbol} for profile {selected_profile_id}. Result via popup.",parent=root_window)
-    threading.Thread(target=fetch_and_add_task,args=(selected_profile_id,ticker_symbol),daemon=True).start()
-
-def handle_delete_selected_holding():
-    global selected_profile_id, holdings_tree, root_window
-    if selected_profile_id is None: messagebox.showerror("Error", "No profile selected.", parent=root_window); return
-    selected_items = holdings_tree.selection();
-    if not selected_items: messagebox.showwarning("No Selection", "No holding selected to delete.", parent=root_window); return
-    selected_item_iid = selected_items[0]; item_values = holdings_tree.item(selected_item_iid, 'values')
-    if not item_values or len(item_values) == 0: messagebox.showerror("Error", "Could not retrieve details.", parent=root_window); return
-    ticker_to_delete = item_values[0]
-    profile_data_row = get_profile_data_for_display(selected_profile_id)
-    profile_name = profile_data_row['name'] if profile_data_row else f"ID {selected_profile_id}"
-    if not messagebox.askyesno("Confirm Delete", f"Delete holding '{ticker_to_delete}' from profile '{profile_name}'?", parent=root_window): return
-    conn, cursor = None, None
-    try:
-        conn, cursor = connect_db()
-        cursor.execute("DELETE FROM stock_holdings WHERE profile_id = ? AND ticker = ?", (selected_profile_id, ticker_to_delete)); conn.commit()
-        if cursor.rowcount > 0: messagebox.showinfo("Success", f"Holding '{ticker_to_delete}' deleted from '{profile_name}'.", parent=root_window)
-        else: messagebox.showwarning("Not Found", f"Holding '{ticker_to_delete}' not found in '{profile_name}'.", parent=root_window)
-        if root_window: root_window.after(0, refresh_all_gui_data)
-    except Exception as e: messagebox.showerror("DB Error", f"Failed to delete holding: {e}", parent=root_window)
-    finally:
-        if conn: conn.close()
-
-def handle_delete_selected_tradelog():
-    global selected_profile_id, tradelog_tree, root_window
-    if selected_profile_id is None: messagebox.showerror("Error", "No profile selected.", parent=root_window); return
-    selected_items_iids = tradelog_tree.selection()
-    if not selected_items_iids: messagebox.showwarning("No Selection", "No trade log entry selected.", parent=root_window); return
-    trade_id_to_delete = selected_items_iids[0]
-    item_values = tradelog_tree.item(trade_id_to_delete, 'values')
-    display_ticker = item_values[0] if item_values and len(item_values) > 0 else "Unknown Ticker"
-    display_exit_time = item_values[3] if item_values and len(item_values) > 3 else "Unknown Time"
-    profile_data_row = get_profile_data_for_display(selected_profile_id)
-    profile_name = profile_data_row['name'] if profile_data_row else f"ID {selected_profile_id}"
-    if not messagebox.askyesno("Confirm Delete", f"Delete trade log for '{display_ticker}' (Exit: {display_exit_time}) from profile '{profile_name}'?",parent=root_window): return
-    conn, cursor = None, None
-    try:
-        conn, cursor = connect_db()
-        cursor.execute("DELETE FROM trade_logs WHERE trade_id = ? AND profile_id = ?", (trade_id_to_delete, selected_profile_id)); conn.commit()
-        if cursor.rowcount > 0: messagebox.showinfo("Success", f"Trade log entry ID {trade_id_to_delete} deleted.", parent=root_window)
-        else: messagebox.showwarning("Not Found", f"Trade log entry ID {trade_id_to_delete} not found.", parent=root_window)
-        if root_window: root_window.after(0, refresh_all_gui_data)
-    except Exception as e: messagebox.showerror("DB Error", f"Failed to delete trade log: {e}", parent=root_window)
-    finally:
-        if conn: conn.close()
 
 def refresh_selected_profile_data_display():
     global holdings_tree,tradelog_tree,total_return_label_var,total_trades_label_var,selected_profile_id,root_window,winning_trades_label_var,losing_trades_label_var,buy_rule_text_var,sell_rule_text_var,manual_entry_button, delete_holding_button, delete_tradelog_button
@@ -226,6 +134,44 @@ def populate_all_scanned_stocks_view():
         for s_data in scanner.last_raw_scan_results: all_scanned_stocks_tree.insert('',tk.END,values=(s_data.get('Company Name','N/A'),s_data.get('Ticker Symbol','N/A'),s_data.get('Zacks Rank','N/A'),s_data.get('Value Score','N/A'),s_data.get('Growth Score','N/A'),s_data.get('Momentum Score','N/A'),s_data.get('VGM Score','N/A'),s_data.get('Stock Page URL','N/A')))
 
 def refresh_all_gui_data():print("DEBUG GUI: Refreshing all GUI data...");refresh_selected_profile_data_display();populate_profile_comparison_view();populate_all_scanned_stocks_view();print("DEBUG GUI: All GUI data refresh attempted.")
+
+def open_profile_editor_window(pid_edit=None):
+    global root_window; e_row=get_profile_data_for_display(pid_edit) if pid_edit else None
+    if pid_edit and not e_row: messagebox.showerror("Error","Load profile failed."); return
+    editor=tk.Toplevel(root_window);editor.title("Edit Profile Notes/Status");editor.geometry("500x350");editor.transient(root_window);editor.grab_set()
+    m_frm=ttk.LabelFrame(editor,text="Details",padding="10");m_frm.pack(pady=10,padx=10,fill=tk.BOTH,expand=True)
+    ttk.Label(m_frm,text="Name:").grid(row=0,column=0,sticky=tk.W,pady=2);n_var=tk.StringVar(value=e_row['name'] if e_row else "");n_ety=ttk.Entry(m_frm,textvariable=n_var,width=50);n_ety.grid(row=0,column=1,sticky=tk.EW,pady=2)
+    p_type_txt=e_row['profile_type'] if e_row and e_row['profile_type'] else "N/A";ttk.Label(m_frm,text="Type:").grid(row=1,column=0,sticky=tk.W,pady=2);ttk.Label(m_frm,text=p_type_txt).grid(row=1,column=1,sticky=tk.W,pady=2)
+    act_var=tk.BooleanVar(value=bool(e_row['is_active']) if e_row else True);act_chk=ttk.Checkbutton(m_frm,text="Active",variable=act_var);act_chk.grid(row=0,column=2,rowspan=2,sticky=tk.W,padx=10,pady=2);m_frm.columnconfigure(1,weight=1)
+    ttk.Label(m_frm,text="Notes:").grid(row=2,column=0,sticky=tk.NW,pady=(10,2));notes_txt=tk.Text(m_frm,height=5,width=60,wrap=tk.WORD);notes_txt.grid(row=3,column=0,columnspan=3,sticky=tk.EW,pady=2)
+    if e_row and e_row['description']: notes_txt.insert(tk.END,e_row['description'])
+    def save_profile(): # Renamed inner function to avoid conflict
+        name=n_var.get().strip();notes=notes_txt.get("1.0",tk.END).strip();active=1 if act_var.get() else 0
+        if not name: messagebox.showerror("Validation Error","Name empty.",parent=editor); return
+        conn,cur=None,None
+        try:
+            conn,cur=connect_db();c_pid=pid_edit
+            if c_pid is None: messagebox.showerror("Error","Adding disabled.",parent=editor); return
+            else: cur.execute("UPDATE investor_profiles SET name=?,description=?,is_active=? WHERE profile_id=?",(name,notes,active,c_pid))
+            conn.commit();messagebox.showinfo("Success","Profile saved.",parent=editor);load_profiles_into_listbox();refresh_selected_profile_data_display();editor.destroy()
+        except sqlite3.IntegrityError: messagebox.showerror("DB Error",f"Name '{name}' exists.",parent=editor)
+        except Exception as e: messagebox.showerror("DB Error",f"Save failed: {e}",parent=editor)
+        finally:
+            if conn:conn.close()
+    b_frm=ttk.Frame(editor);b_frm.pack(pady=10,fill=tk.X,side=tk.BOTTOM);ttk.Button(b_frm,text="Save",command=save_profile).pack(side=tk.RIGHT,padx=10);ttk.Button(b_frm,text="Cancel",command=editor.destroy).pack(side=tk.RIGHT);n_ety.focus_set()
+
+def delete_selected_profile():
+    global selected_profile_id,manual_entry_button;
+    if selected_profile_id is None: messagebox.showwarning("No Profile","Select profile."); return
+    p_row=get_profile_data_for_display(selected_profile_id)
+    if not p_row or not messagebox.askyesno("Confirm Delete",f"Delete '{p_row['name']}'? Data deleted."): return
+    conn,cur=None,None
+    try: conn,cur=connect_db();cur.execute("DELETE FROM investor_profiles WHERE profile_id=?",(selected_profile_id,));conn.commit();messagebox.showinfo("Success",f"Profile '{p_row['name']}' deleted.")
+    except Exception as e: messagebox.showerror("DB Error",f"Delete failed: {e}")
+    finally:
+        if conn:conn.close()
+    load_profiles_into_listbox();selected_profile_id=None;manual_entry_button.config(state=tk.DISABLED) if manual_entry_button else None;refresh_selected_profile_data_display()
+
 def trigger_manual_scan_all_active():threading.Thread(target=lambda: (scanner.scan_and_update_all_active_profiles(),root_window.after(0,refresh_all_gui_data) if root_window else None),daemon=True).start();messagebox.showinfo("Scan Started","Manual scan ALL active profiles initiated.")
 
 def get_next_weekday_offmarket_scan_time(current_dt):
@@ -250,7 +196,7 @@ def hourly_scan_worker():
         if root_window and scanner_active:root_window.after(0,refresh_all_gui_data)
         if not scanner_active: break
         now = datetime.datetime.now(); next_scan_time = None; weekday = now.weekday()
-        if 0 <= weekday <= 4: # Mon-Fri
+        if 0 <= weekday <= 4:
             time_1630 = now.replace(hour=16, minute=30, second=0, microsecond=0)
             time_2315 = now.replace(hour=23, minute=15, second=0, microsecond=0)
             if time_1630 <= now < time_2315: next_scan_time = now + timedelta(minutes=15); print(f"BG Scanner: Market hours. Next in 15 mins.")
@@ -258,14 +204,14 @@ def hourly_scan_worker():
                 if now >= time_2315: next_scan_time = get_next_weekday_offmarket_scan_time( (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) )
                 else: next_scan_time = get_next_weekday_offmarket_scan_time(now)
                 print(f"BG Scanner: Weekday OFF-Market hours.")
-        else: # Weekend
+        else:
             scan_time_1700 = now.replace(hour=17, minute=0, second=0, microsecond=0)
             scan_time_2300 = now.replace(hour=23, minute=0, second=0, microsecond=0)
             if now < scan_time_1700: next_scan_time = scan_time_1700
             elif now < scan_time_2300: next_scan_time = scan_time_2300
             else: next_scan_time = (now + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
             print(f"BG Scanner: Weekend scan.")
-        if next_scan_time is None: next_scan_time = now + timedelta(hours=1); print("BG Scanner: Fallback next scan in 1 hour.") # Fallback
+        if next_scan_time is None: next_scan_time = now + timedelta(hours=1); print("BG Scanner: Fallback next scan in 1 hour.")
         display_next_scan_str = next_scan_time.strftime('%Y-%m-%d %H:%M:%S')
         if root_window and next_scan_time_var and scanner_active: root_window.after(0, lambda: next_scan_time_var.set(f"Next scan: {display_next_scan_str}"))
         if not scanner_active: break
@@ -284,6 +230,7 @@ def hourly_scan_worker():
 
 def on_closing():global scanner_active,root_window;scanner_active=False;print("GUI: Closing...");root_window.destroy() if root_window else None
 
+# --- Main Window Creation ---
 def create_main_window():
     global root_window,holdings_tree,tradelog_tree,profiles_listbox,notebook,comparison_tree,all_scanned_stocks_tree,total_return_label_var,total_trades_label_var,winning_trades_label_var,losing_trades_label_var,buy_rule_text_var,sell_rule_text_var,manual_entry_button, delete_holding_button, delete_tradelog_button, next_scan_time_var
     root=tk.Tk();root_window=root;root.title("Stock Analyzer");root.geometry("1400x950");root.protocol("WM_DELETE_WINDOW",on_closing)
