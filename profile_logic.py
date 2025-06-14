@@ -2,10 +2,11 @@ import sqlite3
 import re
 import math
 
+# --- Helper Functions ---
 def grade_to_numeric(grade: str) -> int:
     if grade is None: return 99
     grade = grade.upper()
-    mapping = {'A': 1, 'B': 2, 'C': 3, 'D': 3, 'F': 4}
+    mapping = {'A': 1, 'B': 2, 'C': 3, 'D': 3, 'F': 4} # D=3, F=4 as per problem doc
     return mapping.get(grade, 99)
 
 def calculate_rating_score(style_scores_dict: dict) -> float:
@@ -13,10 +14,11 @@ def calculate_rating_score(style_scores_dict: dict) -> float:
     v_num = grade_to_numeric(style_scores_dict.get('Value'))
     g_num = grade_to_numeric(style_scores_dict.get('Growth'))
     m_num = grade_to_numeric(style_scores_dict.get('Momentum'))
-    vgm_num = grade_to_numeric(style_scores_dict.get('VGM'))
+    vgm_num = grade_to_numeric(style_scores_dict.get('VGM')) # Assuming VGM is also A-F and uses same mapping
     if 99 in (v_num, g_num, m_num, vgm_num): return float('inf')
     return (v_num + g_num + m_num) * vgm_num
 
+# --- Standardized Entry Criteria ---
 def check_buy_conditions(zacks_rank_str: str, style_scores_dict: dict) -> bool:
     if not isinstance(zacks_rank_str, str) or not zacks_rank_str.startswith("1"): return False
     if not style_scores_dict: return False
@@ -28,147 +30,164 @@ def check_buy_conditions(zacks_rank_str: str, style_scores_dict: dict) -> bool:
     if not ((count_a == 4) or (count_a == 3 and count_b == 1)): return False
     return True
 
+# --- Profile-Specific Exit Criteria ---
 def check_exit_conditions(db_conn: sqlite3.Connection, profile_id: int,
                            current_zacks_rank_str: str, current_style_scores: dict,
                            entry_price: float | None, current_price: float | None) -> bool:
-    cursor = db_conn.cursor()
-    # Ensure row_factory is set on the connection for dict-like access if not already
-    # For this function, assuming db_conn might not have it, so direct indexing after fetch.
-    # If db_conn is guaranteed to have row_factory=sqlite3.Row, then profile_row['profile_type'] is better.
-    cursor.execute("SELECT profile_type FROM investor_profiles WHERE profile_id = ?", (profile_id,))
-    profile_row_tuple = cursor.fetchone()
-
-    if not profile_row_tuple:
-        print(f"Warning: Profile ID {profile_id} not found. Defaulting to strict exit (sell).")
-        return True
-
-    profile_type = profile_row_tuple[0] # Access by index as row_factory might not be set on passed conn
-                                     # Or, ensure all conns passed to this have row_factory set.
-                                     # For now, assuming index 0 for safety if called from various places.
-                                     # If called from scanner.py, its conn has row_factory. Let's use that.
-    # Re-evaluating: the conn from scanner *does* have row_factory.
-    # So, if profile_row was a dict-like row, profile_row['profile_type'] would be ideal.
-    # Let's assume the passed db_conn has row_factory set.
-    # No, the cursor created from db_conn does not automatically inherit row_factory.
-    # The connection itself should have it set.
-    # The `get_db_connection` in scanner.py sets it. `profile_logic.py`'s own test setup also sets it.
-    # So, `profile_row['profile_type']` should be safe.
-
-    # Fetching again with a new cursor from the passed connection
-    # This cursor will inherit row_factory from db_conn if set there.
-    # It's cleaner to just use the fetched tuple if row_factory isn't guaranteed on the connection object itself
-    # for all callers. The test setup for profile_logic now sets it on its connection. Scanner's connection also has it.
-    # So, using profile_row['profile_type'] should be fine.
-
-    # Re-fetch with a cursor that definitely uses the connection's row_factory
-    temp_cursor_for_profile_type = db_conn.cursor() # New cursor from the connection
+    temp_cursor_for_profile_type = db_conn.cursor()
     temp_cursor_for_profile_type.execute("SELECT profile_type FROM investor_profiles WHERE profile_id = ?", (profile_id,))
-    profile_row_for_type = temp_cursor_for_profile_type.fetchone() # This will be a Row object if conn.row_factory was set
+    profile_row_for_type = temp_cursor_for_profile_type.fetchone()
 
     if not profile_row_for_type:
-         print(f"Warning: Profile ID {profile_id} not found (refetch). Defaulting to strict exit (sell).")
-         return True
-    profile_type = profile_row_for_type['profile_type'] # Access by column name
+        print(f"Warning: Profile ID {profile_id} not found. Defaulting to strict exit (sell).")
+        return True
+    profile_type = profile_row_for_type['profile_type']
 
     calculated_score = calculate_rating_score(current_style_scores)
-    rank_no_longer_1 = not (isinstance(current_zacks_rank_str, str) and current_zacks_rank_str.startswith("1"))
+    rank_is_not_1 = not (isinstance(current_zacks_rank_str, str) and current_zacks_rank_str.startswith("1"))
     score_is_penalty = (calculated_score == float('inf'))
     profit_pct = None
-    if entry_price is not None and entry_price > 0 and current_price is not None and current_price > 0 : # ensure current_price > 0 too
+    if entry_price is not None and entry_price > 0 and current_price is not None and current_price > 0 :
         profit_pct = ((current_price - entry_price) / entry_price) * 100
 
-    if profile_type == "Cautious":
-        rank_is_exit = not (isinstance(current_zacks_rank_str, str) and (current_zacks_rank_str.startswith("1") or current_zacks_rank_str.startswith("2")))
-        return rank_is_exit or calculated_score > 4 or score_is_penalty
-    elif profile_type == "Hesitant":
-        return rank_no_longer_1 or calculated_score > 5 or score_is_penalty
-    elif profile_type == "Brave":
-        rank_is_exit = not (isinstance(current_zacks_rank_str, str) and (current_zacks_rank_str.startswith("1") or current_zacks_rank_str.startswith("2") or current_zacks_rank_str.startswith("3")))
-        return rank_is_exit or calculated_score > 6 or score_is_penalty
-    elif profile_type == "Reckless":
-        rank_is_exit = not (isinstance(current_zacks_rank_str, str) and (current_zacks_rank_str.startswith("1") or current_zacks_rank_str.startswith("2") or current_zacks_rank_str.startswith("3") or current_zacks_rank_str.startswith("4")))
-        return rank_is_exit or score_is_penalty
-    elif profile_type == "Greedy2Pct":
-        base_exit = rank_no_longer_1 or calculated_score > 4 or score_is_penalty
-        if profit_pct is not None and profit_pct > 2.0: return True
+    # Updated Exit Logic as per new rules:
+    if profile_type == "Cautious":      # Exit if Rank is not 1 OR Calc Score > 4 OR Score is Invalid
+        return rank_is_not_1 or calculated_score > 4 or score_is_penalty
+    elif profile_type == "Hesitant":    # Exit if Rank is not 1 OR Calc Score > 5 OR Score is Invalid
+        return rank_is_not_1 or calculated_score > 5 or score_is_penalty
+    elif profile_type == "Brave":       # Exit if Rank is not 1 OR Calc Score > 6 OR Score is Invalid
+        return rank_is_not_1 or calculated_score > 6 or score_is_penalty
+    elif profile_type == "Reckless":    # Exit if Rank is not 1 OR Calc Score > 7 OR Score is Invalid
+        return rank_is_not_1 or calculated_score > 7 or score_is_penalty
+    elif profile_type == "Greedy2Pct":  # Exit if (Rank is not 1 OR Calc Score > 4 OR Score is Invalid) OR Profit >= 2%
+        base_exit = rank_is_not_1 or calculated_score > 4 or score_is_penalty
+        if profit_pct is not None and profit_pct >= 2.0: return True
         return base_exit
-    elif profile_type == "Greedy3Pct":
-        base_exit = rank_no_longer_1 or calculated_score > 4 or score_is_penalty
-        if profit_pct is not None and profit_pct > 3.0: return True
+    elif profile_type == "Greedy3Pct":  # Exit if (Rank is not 1 OR Calc Score > 4 OR Score is Invalid) OR Profit >= 3%
+        base_exit = rank_is_not_1 or calculated_score > 4 or score_is_penalty
+        if profit_pct is not None and profit_pct >= 3.0: return True
         return base_exit
-    elif profile_type == "Greedy4Pct":
-        base_exit = rank_no_longer_1 or calculated_score > 4 or score_is_penalty
-        if profit_pct is not None and profit_pct > 4.0: return True
+    elif profile_type == "Greedy4Pct":  # Exit if (Rank is not 1 OR Calc Score > 5 OR Score is Invalid) OR Profit >= 4%
+        base_exit = rank_is_not_1 or calculated_score > 5 or score_is_penalty # Score threshold is > 5 here
+        if profit_pct is not None and profit_pct >= 4.0: return True
         return base_exit
     else:
         print(f"Warning: Unknown profile_type '{profile_type}' for ID {profile_id}. Defaulting to strict exit.")
         return True
 
+# --- Test Area ---
 def setup_in_memory_db_for_profile_logic_tests(): # Returns connection
     conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row # IMPORTANT: Set row_factory on the connection
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    # ... (table creations as before)
     cursor.execute("CREATE TABLE investor_profiles (profile_id INTEGER PRIMARY KEY, name TEXT, profile_type TEXT, description TEXT, is_active INTEGER)")
-    cursor.execute("CREATE TABLE profile_rules (rule_id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, category TEXT, condition TEXT, value1 TEXT, value2 TEXT, FOREIGN KEY (profile_id) REFERENCES investor_profiles (profile_id))")
-
+    # No profile_rules table needed for these tests as rules are now in profile_logic.py
     profiles = [
         (1, "Cautious Test", "Cautious", "Desc", 1), (2, "Hesitant Test", "Hesitant", "Desc", 1),
         (3, "Brave Test", "Brave", "Desc", 1), (4, "Reckless Test", "Reckless", "Desc", 1),
         (5, "Greedy2 Test", "Greedy2Pct", "Desc", 1), (6, "Greedy3 Test", "Greedy3Pct", "Desc", 1),
-        (7, "Greedy4 Test", "Greedy4Pct", "Desc", 1)
+        (7, "Greedy4 Test", "Greedy4Pct", "Desc", 1),
+        (8, "UnknownType Test", "Unknown", "Desc", 1) # For default exit
     ]
     cursor.executemany("INSERT INTO investor_profiles VALUES (?,?,?,?,?)", profiles)
-    # No need to insert into profile_rules as check_buy_conditions is standardized
-    # and check_exit_conditions uses profile_type, not profile_rules table.
     conn.commit()
     return conn
 
 if __name__ == "__main__":
-    print("--- Testing Profile Logic (New Scoring & Exit Strategies) ---")
-    # ... (grade_to_numeric, calculate_rating_score, check_buy_conditions tests as before) ...
+    print("--- Testing Profile Logic (Updated Scoring & Exit Strategies) ---")
+
+    # Test grade_to_numeric
     print("\n--- Testing grade_to_numeric ---")
-    print(f"A -> {grade_to_numeric('A')} (Exp: 1)")
-    print(f"F -> {grade_to_numeric('F')} (Exp: 4)")
-    print(f"None -> {grade_to_numeric(None)} (Exp: 99)")
+    assert grade_to_numeric('A') == 1, "Test Failed: A"
+    assert grade_to_numeric('B') == 2, "Test Failed: B"
+    assert grade_to_numeric('C') == 3, "Test Failed: C"
+    assert grade_to_numeric('D') == 3, "Test Failed: D" # As per problem doc
+    assert grade_to_numeric('F') == 4, "Test Failed: F" # As per problem doc
+    assert grade_to_numeric('Z') == 99, "Test Failed: Z"
+    assert grade_to_numeric(None) == 99, "Test Failed: None"
+    print("grade_to_numeric tests passed.")
 
+    # Test calculate_rating_score
     print("\n--- Testing calculate_rating_score ---")
-    print(f"All A's: {calculate_rating_score({'Value':'A','Growth':'A','Momentum':'A','VGM':'A'})} (Exp: 3)")
-    print(f"A,A,A,B: {calculate_rating_score({'Value':'A','Growth':'A','Momentum':'A','VGM':'B'})} (Exp: 6)")
-    print(f"Missing VGM: {calculate_rating_score({'Value':'A','Growth':'A','Momentum':'A'})} (Exp: inf)")
+    assert calculate_rating_score({'Value':'A','Growth':'A','Momentum':'A','VGM':'A'}) == 3, "Test Failed: All A" # (1+1+1)*1=3
+    assert calculate_rating_score({'Value':'A','Growth':'A','Momentum':'A','VGM':'B'}) == 6, "Test Failed: AAA VGM B" # (1+1+1)*2=6
+    assert calculate_rating_score({'Value':'A','Growth':'A','Momentum':'B','VGM':'A'}) == 4, "Test Failed: AAB VGM A" # (1+1+2)*1=4
+    assert calculate_rating_score({'Value':'A','Growth':'B','Momentum':'C','VGM':'A'}) == 6, "Test Failed: ABC VGM A" # (1+2+3)*1=6
+    assert calculate_rating_score({'Value':'A','Growth':'A','Momentum':'A','VGM':'F'}) == 12, "Test Failed: AAA VGM F" # (1+1+1)*4=12
+    assert calculate_rating_score({'Value':'A','Growth':'A','Momentum':'A'}) == float('inf'), "Test Failed: Missing VGM"
+    assert calculate_rating_score({'Value':'A','Growth':'Z','Momentum':'A','VGM':'A'}) == float('inf'), "Test Failed: Invalid Grade"
+    assert calculate_rating_score({}) == float('inf'), "Test Failed: Empty dict"
+    print("calculate_rating_score tests passed.")
 
+    # Test standardized check_buy_conditions
     print("\n--- Testing standardized check_buy_conditions ---")
     all_a = {'Value':'A','Growth':'A','Momentum':'A','VGM':'A'}
     three_a_one_b = {'Value':'A','Growth':'B','Momentum':'A','VGM':'A'}
-    print(f"Rank 1, All A: {check_buy_conditions('1-Strong Buy', all_a)} (Exp: True)")
-    print(f"Rank 1, 3A1B: {check_buy_conditions('1-Strong Buy', three_a_one_b)} (Exp: True)")
+    two_a_two_b = {'Value':'A','Growth':'B','Momentum':'B','VGM':'A'}
+    assert check_buy_conditions('1-Strong Buy', all_a) == True, "Buy Test Failed: Rank 1, All A"
+    assert check_buy_conditions('1-Strong Buy', three_a_one_b) == True, "Buy Test Failed: Rank 1, 3A1B"
+    assert check_buy_conditions('2-Buy', all_a) == False, "Buy Test Failed: Rank 2, All A"
+    assert check_buy_conditions('1-Strong Buy', two_a_two_b) == False, "Buy Test Failed: Rank 1, 2A2B"
+    assert check_buy_conditions('1-Strong Buy', {'Value':'A'}) == False, "Buy Test Failed: Rank 1, Missing score"
+    print("check_buy_conditions tests passed.")
 
     test_db_conn = setup_in_memory_db_for_profile_logic_tests()
-    print("\n--- Testing check_exit_conditions (using In-Memory DB) ---")
-    scores_good = {'Value':'A','Growth':'A','Momentum':'A','VGM':'A'} # Calc = 3
-    scores_caution_borderline = {'Value':'A','Growth':'A','Momentum':'B','VGM':'A'} # Calc = 4
-    scores_caution_sell = {'Value':'B','Growth':'A','Momentum':'B','VGM':'A'}    # Calc = 5
-    scores_hesitant_sell_vgm_b = {'Value':'A','Growth':'C','Momentum':'A','VGM':'B'} # (1+3+1)*2 = 10
-    scores_inf = {'Value':'Z','Growth':'A','Momentum':'A','VGM':'A'}
+    print("\n--- Testing check_exit_conditions (using In-Memory DB & New Rules) ---")
 
-    print("Cautious Profile (ID 1): Sell if Rank > 2 or Score > 4")
-    print(f"  Rank 1, Score 3 (Good): {check_exit_conditions(test_db_conn, 1, '1-SB', scores_good, 10, 10)} (Exp: False)")
-    print(f"  Rank 2, Score 4 (Border): {check_exit_conditions(test_db_conn, 1, '2-Buy', scores_caution_borderline, 10, 10)} (Exp: False)")
-    print(f"  Rank 3, Score 3 (Rank fail): {check_exit_conditions(test_db_conn, 1, '3-H', scores_good, 10, 10)} (Exp: True)")
-    print(f"  Rank 1, Score 5 (Score fail): {check_exit_conditions(test_db_conn, 1, '1-SB', scores_caution_sell, 10, 10)} (Exp: True)")
-    print(f"  Rank 1, Score inf (Penalty): {check_exit_conditions(test_db_conn, 1, '1-SB', scores_inf, 10, 10)} (Exp: True)")
-
-    print("Hesitant Profile (ID 2): Sell if Rank != 1 or Score > 5")
-    # scores_hesitant_sell = {'Value':'A','Growth':'C','Momentum':'A','VGM':'A'} # Calc = 5
-    print(f"  Rank 1, Score 5 (Border): {check_exit_conditions(test_db_conn, 2, '1-SB', {'Value':'A','Growth':'C','Momentum':'A','VGM':'A'}, 10, 10)} (Exp: False)")
-    print(f"  Rank 1, Score 10 (Score fail): {check_exit_conditions(test_db_conn, 2, '1-SB', scores_hesitant_sell_vgm_b, 10, 10)} (Exp: True)")
-
-    print("Greedy2Pct Profile (ID 5): Sell if (Rank != 1 or Score > 4) OR Profit > 2%")
-    print(f"  Base OK, Profit 1% (No Sell): {check_exit_conditions(test_db_conn, 5, '1-SB', scores_good, 100, 101)} (Exp: False)")
-    print(f"  Base OK, Profit 3% (Sell): {check_exit_conditions(test_db_conn, 5, '1-SB', scores_good, 100, 103)} (Exp: True)")
-    print(f"  Base OK, No prices (No Sell by profit): {check_exit_conditions(test_db_conn, 5, '1-SB', scores_good, None, None)} (Exp: False)")
-    print(f"  Base OK, current_price=0 (No Sell by profit): {check_exit_conditions(test_db_conn, 5, '1-SB', scores_good, 100, 0)} (Exp: False)")
+    # Scores for testing exit conditions
+    s_rank1_score3 = ('1-SB', {'Value':'A','Growth':'A','Momentum':'A','VGM':'A'}) # Score (1+1+1)*1 = 3
+    s_rank1_score4 = ('1-SB', {'Value':'A','Growth':'A','Momentum':'B','VGM':'A'}) # Score (1+1+2)*1 = 4
+    s_rank1_score5 = ('1-SB', {'Value':'B','Growth':'A','Momentum':'B','VGM':'A'}) # Score (2+1+2)*1 = 5
+    s_rank1_score6 = ('1-SB', {'Value':'A','Growth':'B','Momentum':'C','VGM':'A'}) # Score (1+2+3)*1 = 6
+    s_rank1_score7 = ('1-SB', {'Value':'B','Growth':'B','Momentum':'C','VGM':'A'}) # Score (2+2+3)*1 = 7
+    s_rank1_score8 = ('1-SB', {'Value':'B','Growth':'C','Momentum':'C','VGM':'A'}) # Score (2+3+3)*1 = 8
+    s_rank2_score3 = ('2-Buy', s_rank1_score3[1])
+    s_rank1_score_inf = ('1-SB', {'Value':'Z','Growth':'A','Momentum':'A','VGM':'A'})
 
 
+    # Cautious (ID 1): Exit if Rank is not 1 OR Calc Score > 4 OR Score is Invalid
+    print("Cautious (ID 1): Exit if Rank != 1 or Score > 4 or Invalid")
+    assert check_exit_conditions(test_db_conn,1,*s_rank1_score3,10,10) == False, "Cautious 1" # R1,S3 -> F
+    assert check_exit_conditions(test_db_conn,1,*s_rank1_score4,10,10) == False, "Cautious 2" # R1,S4 -> F
+    assert check_exit_conditions(test_db_conn,1,*s_rank1_score5,10,10) == True,  "Cautious 3" # R1,S5 (>4) -> T
+    assert check_exit_conditions(test_db_conn,1,*s_rank2_score3,10,10) == True,  "Cautious 4" # R2 (!=1) -> T
+    assert check_exit_conditions(test_db_conn,1,*s_rank1_score_inf,10,10) == True, "Cautious 5" # R1,Sinf -> T
+
+    # Hesitant (ID 2): Exit if Rank is not 1 OR Calc Score > 5 OR Score is Invalid
+    print("Hesitant (ID 2): Exit if Rank != 1 or Score > 5 or Invalid")
+    assert check_exit_conditions(test_db_conn,2,*s_rank1_score5,10,10) == False, "Hesitant 1" # R1,S5 -> F
+    assert check_exit_conditions(test_db_conn,2,*s_rank1_score6,10,10) == True,  "Hesitant 2" # R1,S6 (>5) -> T
+    assert check_exit_conditions(test_db_conn,2,*s_rank2_score3,10,10) == True,  "Hesitant 3" # R2 (!=1) -> T
+
+    # Brave (ID 3): Exit if Rank is not 1 OR Calc Score > 6 OR Score is Invalid
+    print("Brave (ID 3): Exit if Rank != 1 or Score > 6 or Invalid")
+    assert check_exit_conditions(test_db_conn,3,*s_rank1_score6,10,10) == False, "Brave 1" # R1,S6 -> F
+    assert check_exit_conditions(test_db_conn,3,*s_rank1_score7,10,10) == True,  "Brave 2" # R1,S7 (>6) -> T
+    assert check_exit_conditions(test_db_conn,3,*s_rank2_score3,10,10) == True,  "Brave 3" # R2 (!=1) -> T
+
+    # Reckless (ID 4): Exit if Rank is not 1 OR Calc Score > 7 OR Score is Invalid
+    print("Reckless (ID 4): Exit if Rank != 1 or Score > 7 or Invalid")
+    assert check_exit_conditions(test_db_conn,4,*s_rank1_score7,10,10) == False, "Reckless 1" # R1,S7 -> F
+    assert check_exit_conditions(test_db_conn,4,*s_rank1_score8,10,10) == True,  "Reckless 2" # R1,S8 (>7) -> T
+    assert check_exit_conditions(test_db_conn,4,*s_rank2_score3,10,10) == True,  "Reckless 3" # R2 (!=1) -> T
+
+    # Greedy2Pct (ID 5): Exit if (Rank != 1 or Score > 4 or Invalid) OR Profit >= 2%
+    print("Greedy2Pct (ID 5): Exit if (Rank != 1 or Score > 4 or Invalid) OR Profit >= 2%")
+    assert check_exit_conditions(test_db_conn,5,*s_rank1_score3,100,101.9) == False, "Greedy2 1" # R1,S3, Profit 1.9% -> F
+    assert check_exit_conditions(test_db_conn,5,*s_rank1_score3,100,102.0) == True,  "Greedy2 2" # R1,S3, Profit 2.0% -> T
+    assert check_exit_conditions(test_db_conn,5,*s_rank1_score5,100,101.0) == True,  "Greedy2 3" # R1,S5(>4) -> T
+    assert check_exit_conditions(test_db_conn,5,*s_rank2_score3,100,101.0) == True,  "Greedy2 4" # R2(!=1) -> T
+
+    # Greedy4Pct (ID 7): Exit if (Rank != 1 or Score > 5 or Invalid) OR Profit >= 4%
+    print("Greedy4Pct (ID 7): Exit if (Rank != 1 or Score > 5 or Invalid) OR Profit >= 4%")
+    assert check_exit_conditions(test_db_conn,7,*s_rank1_score5,100,103.9) == False, "Greedy4 1" # R1,S5, Profit 3.9% -> F
+    assert check_exit_conditions(test_db_conn,7,*s_rank1_score5,100,104.0) == True,  "Greedy4 2" # R1,S5, Profit 4.0% -> T
+    assert check_exit_conditions(test_db_conn,7,*s_rank1_score6,100,101.0) == True,  "Greedy4 3" # R1,S6(>5) -> T
+
+    # Unknown Profile Type (ID 8)
+    print("Unknown Profile (ID 8): Should always sell")
+    assert check_exit_conditions(test_db_conn,8,*s_rank1_score3,10,10) == True, "UnknownType 1"
+
+    print("check_exit_conditions tests passed.")
     test_db_conn.close()
     print("\n--- End of Profile Logic Tests ---")

@@ -42,7 +42,6 @@ def handle_manual_stock_entry(): # As implemented
     ticker_symbol = ticker_symbol.strip().upper()
     if not ticker_symbol: messagebox.showerror("Error", "Ticker symbol cannot be empty.", parent=root_window); return
     def fetch_and_add_task(profile_id_local, ticker_local):
-        # ... (Implementation from Subtask 26, confirmed correct) ...
         print(f"MANUAL ENTRY THREAD: Starting for {ticker_local}, Profile ID: {profile_id_local}")
         url = f"https://www.zacks.com/stock/quote/{ticker_local}"; individual_page_html_content = None
         try:
@@ -81,8 +80,7 @@ def handle_manual_stock_entry(): # As implemented
     messagebox.showinfo("In Progress",f"Fetching data for {ticker_symbol} for profile {selected_profile_id}. Result via popup.",parent=root_window)
     threading.Thread(target=fetch_and_add_task,args=(selected_profile_id,ticker_symbol),daemon=True).start()
 
-# --- Delete Selected Holding ---
-def handle_delete_selected_holding(): # As implemented in Subtask 30
+def handle_delete_selected_holding(): # As implemented
     global selected_profile_id, holdings_tree, root_window
     if selected_profile_id is None: messagebox.showerror("Error", "No profile selected.", parent=root_window); return
     selected_items = holdings_tree.selection();
@@ -104,76 +102,53 @@ def handle_delete_selected_holding(): # As implemented in Subtask 30
     finally:
         if conn: conn.close()
 
-# --- Delete Selected Trade Log Entry ---
-def handle_delete_selected_tradelog():
+def handle_delete_selected_tradelog(): # As implemented
     global selected_profile_id, tradelog_tree, root_window
-
-    if selected_profile_id is None: # Should ideally not happen if button is managed by profile selection
-        messagebox.showerror("Error", "No profile selected.", parent=root_window)
-        return
-
+    if selected_profile_id is None: messagebox.showerror("Error", "No profile selected.", parent=root_window); return
     selected_items_iids = tradelog_tree.selection()
-    if not selected_items_iids:
-        messagebox.showwarning("No Selection", "No trade log entry selected from the table.", parent=root_window)
-        return
-
-    trade_id_to_delete = selected_items_iids[0] # This iid IS the trade_id due to how it's populated
-
-    # Fetch some details for the confirmation message using the trade_id (iid)
+    if not selected_items_iids: messagebox.showwarning("No Selection", "No trade log entry selected.", parent=root_window); return
+    trade_id_to_delete = selected_items_iids[0]
     item_values = tradelog_tree.item(trade_id_to_delete, 'values')
     display_ticker = item_values[0] if item_values and len(item_values) > 0 else "Unknown Ticker"
-    display_exit_time = item_values[3] if item_values and len(item_values) > 3 else "Unknown Time" # Exit Time is 4th col (idx 3)
-
+    display_exit_time = item_values[3] if item_values and len(item_values) > 3 else "Unknown Time"
     profile_data_row = get_profile_data_for_display(selected_profile_id)
     profile_name = profile_data_row['name'] if profile_data_row else f"ID {selected_profile_id}"
-
-    if not messagebox.askyesno("Confirm Delete",
-                               f"Are you sure you want to delete this trade log entry from profile '{profile_name}'?\nTicker: {display_ticker}\nExit Time: {display_exit_time}",
-                               parent=root_window):
-        return
-
+    if not messagebox.askyesno("Confirm Delete", f"Delete trade log for '{display_ticker}' (Exit: {display_exit_time}) from profile '{profile_name}'?",parent=root_window): return
     conn, cursor = None, None
     try:
         conn, cursor = connect_db()
-        print(f"GUI: Deleting trade log entry with trade_id {trade_id_to_delete} for profile_id {selected_profile_id}...")
-        # Note: We delete by trade_id, which is unique. Profile_id check is mostly for safety/consistency.
-        cursor.execute("DELETE FROM trade_logs WHERE trade_id = ? AND profile_id = ?",
-                       (trade_id_to_delete, selected_profile_id))
-        conn.commit()
-
-        if cursor.rowcount > 0:
-            messagebox.showinfo("Success", f"Trade log entry (ID: {trade_id_to_delete}) deleted successfully from profile '{profile_name}'.", parent=root_window)
-            print(f"GUI: Successfully deleted trade log entry ID: {trade_id_to_delete}")
-        else:
-            messagebox.showwarning("Not Found", f"Trade log entry (ID: {trade_id_to_delete}) not found for profile '{profile_name}' in the database.", parent=root_window)
-            print(f"GUI: No trade log entry deleted for ID: {trade_id_to_delete} (already gone or profile ID mismatch?).")
-
-        if root_window:
-            root_window.after(0, refresh_all_gui_data) # Refresh all views
-
-    except sqlite3.Error as e:
-        print(f"GUI: DB Error deleting trade log entry: {e}")
-        messagebox.showerror("Database Error", f"Failed to delete trade log entry: {e}", parent=root_window)
-    except Exception as e_gen:
-        print(f"GUI: Unexpected error deleting trade log entry: {e_gen}")
-        messagebox.showerror("Error", f"An unexpected error occurred: {e_gen}", parent=root_window)
+        cursor.execute("DELETE FROM trade_logs WHERE trade_id = ? AND profile_id = ?", (trade_id_to_delete, selected_profile_id)); conn.commit()
+        if cursor.rowcount > 0: messagebox.showinfo("Success", f"Trade log entry ID {trade_id_to_delete} deleted.", parent=root_window)
+        else: messagebox.showwarning("Not Found", f"Trade log entry ID {trade_id_to_delete} not found.", parent=root_window)
+        if root_window: root_window.after(0, refresh_all_gui_data)
+    except Exception as e: messagebox.showerror("DB Error", f"Failed to delete trade log: {e}", parent=root_window)
     finally:
-        if conn:
-            conn.close()
-
+        if conn: conn.close()
 
 # --- Helper Function for Profile Rule Display Text ---
-def get_profile_rules_display_text(profile_type: str | None) -> dict: # Updated in Subtask 28
+def get_profile_rules_display_text(profile_type: str | None) -> dict:
+    # Standardized Buy Rule for all predefined profiles
     buy_rule = "Entry: Zacks Rank '1' AND (Style Scores: All 'A' OR Max 1 'B' with rest 'A')."
-    sell_rule = "N/A"
-    if profile_type == "Cautious": sell_rule = "Exit: Rank is not '1' or '2' (i.e., 3, 4, 5) OR Calculated Score > 4 OR Score is invalid."
-    elif profile_type == "Hesitant": sell_rule = "Exit: Rank is not '1' OR Calculated Score > 5 OR Score is invalid."
-    elif profile_type == "Brave": sell_rule = "Exit: Rank is not '1', '2', or '3' (i.e., 4 or 5) OR Calculated Score > 6 OR Score is invalid."
-    elif profile_type == "Reckless": sell_rule = "Exit: Rank is '5' (i.e., >4) OR Score is invalid."
-    elif profile_type == "Greedy2Pct": sell_rule = "Exit: (Rank is not '1' OR Calculated Score > 4 OR Score is invalid) OR Profit > 2%."
-    elif profile_type == "Greedy3Pct": sell_rule = "Exit: (Rank is not '1' OR Calculated Score > 4 OR Score is invalid) OR Profit > 3%."
-    elif profile_type == "Greedy4Pct": sell_rule = "Exit: (Rank is not '1' OR Calculated Score > 4 OR Score is invalid) OR Profit > 4%."
-    elif profile_type is None or profile_type == "N/A (Custom)": buy_rule = "Entry: Rules not predefined."; sell_rule = "Exit: Rules not predefined."
+    sell_rule = "N/A" # Default for unknown types
+
+    if profile_type == "Cautious":
+        sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid."
+    elif profile_type == "Hesitant":
+        sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 5 OR Score is invalid."
+    elif profile_type == "Brave":
+        sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 6 OR Score is invalid."
+    elif profile_type == "Reckless":
+        sell_rule = "Exit: Zacks Rank is no longer '1' OR Calculated Score > 7 OR Score is invalid."
+    elif profile_type == "Greedy2Pct":
+        sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid) OR Profit >= 2%."
+    elif profile_type == "Greedy3Pct":
+        sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 4 OR Score is invalid) OR Profit >= 3%."
+    elif profile_type == "Greedy4Pct":
+        sell_rule = "Exit: (Zacks Rank is no longer '1' OR Calculated Score > 5 OR Score is invalid) OR Profit >= 4%."
+    elif profile_type is None or profile_type == "N/A (Custom)":
+        buy_rule = "Entry: Rules not predefined for this profile type."
+        sell_rule = "Exit: Rules not predefined for this profile type."
+
     return {'buy': buy_rule, 'sell': sell_rule}
 
 # --- Profile Management Functions ---
@@ -189,11 +164,10 @@ def load_profiles_into_listbox(): # ... (as before)
     finally:
         if conn:conn.close()
 
-def on_profile_select(event): # ... (as before, enables/disables manual_entry_button)
+def on_profile_select(event): # ... (as before)
     global selected_profile_id, profiles_listbox, profile_id_map, manual_entry_button
     if not profiles_listbox or not profiles_listbox.curselection(): selected_profile_id=None
     else: selected_profile_id = profile_id_map.get(profiles_listbox.curselection()[0])
-
     if manual_entry_button: manual_entry_button.config(state=tk.NORMAL if selected_profile_id is not None else tk.DISABLED)
     refresh_selected_profile_data_display()
 
@@ -204,7 +178,7 @@ def get_profile_data_for_display(pid): # ... (as before)
     finally:
         if conn:conn.close()
 
-def open_profile_editor_window(pid_edit=None): # ... (as before, simplified editor)
+def open_profile_editor_window(pid_edit=None): # ... (as before)
     global root_window; e_row=get_profile_data_for_display(pid_edit) if pid_edit else None
     if pid_edit and not e_row: messagebox.showerror("Error","Load profile failed."); return
     editor=tk.Toplevel(root_window);editor.title("Edit Profile Notes/Status");editor.geometry("500x350");editor.transient(root_window);editor.grab_set()
@@ -241,24 +215,21 @@ def delete_selected_profile(): # ... (as before)
         if conn:conn.close()
     load_profiles_into_listbox();selected_profile_id=None;manual_entry_button.config(state=tk.DISABLED) if manual_entry_button else None;refresh_selected_profile_data_display()
 
-# --- Event handler for holdings_tree selection ---
-def on_holding_select(event): # As implemented in Subtask 29
+def on_holding_select(event): # ... (as before)
     global delete_holding_button, holdings_tree
     if not delete_holding_button or not holdings_tree: return
     selected_items = holdings_tree.selection()
     if selected_items: delete_holding_button.config(state=tk.NORMAL)
     else: delete_holding_button.config(state=tk.DISABLED)
 
-# --- Event handler for tradelog_tree selection ---
-def on_tradelog_select(event): # New
+def on_tradelog_select(event): # ... (as before)
     global delete_tradelog_button, tradelog_tree
     if not delete_tradelog_button or not tradelog_tree: return
     selected_items = tradelog_tree.selection()
     if selected_items: delete_tradelog_button.config(state=tk.NORMAL)
     else: delete_tradelog_button.config(state=tk.DISABLED)
 
-# --- Refresh Data Display Functions ---
-def refresh_selected_profile_data_display():
+def refresh_selected_profile_data_display(): # ... (as before)
     global holdings_tree,tradelog_tree,total_return_label_var,total_trades_label_var,selected_profile_id,root_window,winning_trades_label_var,losing_trades_label_var,buy_rule_text_var,sell_rule_text_var,manual_entry_button, delete_holding_button, delete_tradelog_button
     p_name="None";p_type=None
     if selected_profile_id: p_row=get_profile_data_for_display(selected_profile_id); p_name=p_row['name'] if p_row else "Error"; p_type=p_row['profile_type'] if p_row else None
@@ -287,22 +258,18 @@ def refresh_selected_profile_data_display():
             ep_val=f"{get_val(r_data,'entry_price',0.0):.2f}" if isinstance(get_val(r_data,'entry_price',None),(int,float)) else "N/A"
             v_tup=(str(get_val(r_data,'ticker')),str(get_val(r_data,'company_name')),str(get_val(r_data,'entry_timestamp')),str(get_val(r_data,'entry_zacks_rank')),ep_val,str(get_val(r_data,'entry_style_value')),str(get_val(r_data,'entry_style_growth')),str(get_val(r_data,'entry_style_momentum')),str(get_val(r_data,'entry_style_vgm')),str(get_val(r_data,'last_checked_timestamp')),str(get_val(r_data,'current_zacks_rank')),str(get_val(r_data,'current_style_value')),str(get_val(r_data,'current_style_growth')),str(get_val(r_data,'current_style_momentum')),str(get_val(r_data,'current_style_vgm')))
             holdings_tree.insert('',tk.END,values=v_tup)
-
-        # Updated tl_q to include trade_id for iid
         tl_q="SELECT trade_id, ticker,company_name,entry_timestamp,exit_timestamp,entry_zacks_rank,exit_zacks_rank,entry_style_vgm,exit_style_vgm,entry_price,exit_price,return_percentage,reason_for_exit FROM trade_logs WHERE profile_id=? ORDER BY exit_timestamp DESC"
         tl_rows=cur.execute(tl_q,(selected_profile_id,)).fetchall()
         for r_data in tl_rows:
             def get_val_tl(r,k,d="N/A"):
                 try: v=r[k]; return v if v is not None else d
                 except(IndexError,KeyError): return d
-            trade_id_for_iid = r_data['trade_id'] # Get trade_id for use as iid
+            trade_id_for_iid = r_data['trade_id']
             ep_tl=f"{get_val_tl(r_data,'entry_price',0.0):.2f}" if isinstance(get_val_tl(r_data,'entry_price',None),(int,float)) else "N/A"
             xp_tl=f"{get_val_tl(r_data,'exit_price',0.0):.2f}" if isinstance(get_val_tl(r_data,'exit_price',None),(int,float)) else "N/A"
             ret_pct_tl=f"{get_val_tl(r_data,'return_percentage',0.0):.2f}%" if isinstance(get_val_tl(r_data,'return_percentage',None),(int,float)) else "N/A"
-            # Ensure tuple matches trade_cols order, excluding trade_id from *displayed* values
             v_tup_tl=(str(get_val_tl(r_data,'ticker')),str(get_val_tl(r_data,'company_name')),str(get_val_tl(r_data,'entry_timestamp')),str(get_val_tl(r_data,'exit_timestamp')),str(get_val_tl(r_data,'entry_zacks_rank')),str(get_val_tl(r_data,'exit_zacks_rank')),str(get_val_tl(r_data,'entry_style_vgm')),str(get_val_tl(r_data,'exit_style_vgm')),ep_tl,xp_tl,ret_pct_tl,str(get_val_tl(r_data,'reason_for_exit')))
-            tradelog_tree.insert('',tk.END, iid=trade_id_for_iid, values=v_tup_tl) # Use trade_id as iid
-
+            tradelog_tree.insert('',tk.END, iid=trade_id_for_iid, values=v_tup_tl)
         cur.execute("SELECT COUNT(*),SUM(return_percentage) FROM trade_logs WHERE profile_id=?",(selected_profile_id,));stats=cur.fetchone()
         t_trades=stats['COUNT(*)'] if stats and stats['COUNT(*)'] is not None else 0;t_ret=stats['SUM(return_percentage)'] if stats and stats['SUM(return_percentage)'] is not None else 0.0
         cur.execute("SELECT COUNT(*) FROM trade_logs WHERE profile_id=? AND return_percentage > 0",(selected_profile_id,));win_r=cur.fetchone();wins=win_r['COUNT(*)'] if win_r else 0
