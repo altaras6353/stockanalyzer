@@ -26,6 +26,8 @@ comparison_tree = None
 all_scanned_stocks_tree = None
 notebook = None
 scanner_active = True
+next_scan_time_str = "Calculating..." # Added global for next scan time
+next_scan_time_display_var = None # Added global for Tkinter display
 
 # --- Helper Function for Profile Rule Display Text ---
 def get_profile_rules_display_text(profile_type: str | None) -> dict:
@@ -190,41 +192,148 @@ def trigger_manual_scan_all_active():
     threading.Thread(target=lambda: (scanner.scan_and_update_all_active_profiles(), root_window.after(0, refresh_all_gui_data) if root_window else None), daemon=True).start()
     messagebox.showinfo("Scan Started", "Manual scan for ALL active profiles initiated.")
 
-# --- Background Scanner Worker ---
-def hourly_scan_worker():
-    global scanner_active, root_window
-    try:
-        print("BG Scanner: Initializing DB for worker thread...") # Clarified print
-        conn_init,cursor_init=connect_db()
-        create_tables(cursor_init);conn_init.commit()
-        add_predefined_profiles(conn_init,cursor_init) # This ensures 7 profiles are set up
-        conn_init.close(); print("BG Scanner: DB setup confirmed for worker thread.")
-    except Exception as e: print(f"BG Scanner: DB setup error: {e}. Thread stopping."); return
+# --- Helper Function to Update Next Scan Time String ---
+def update_next_scan_time_label_for_worker(next_scan_dt_obj):
+    global next_scan_time_str, root_window, next_scan_time_display_var # Add next_scan_time_display_var
+    display_text = "Next Scan: Calculating..."
+    if isinstance(next_scan_dt_obj, datetime.datetime):
+        display_text = f"Next Scan: {next_scan_dt_obj.strftime('%Y-%m-%d %H:%M:%S')}"
+    elif isinstance(next_scan_dt_obj, str) and next_scan_dt_obj.startswith("Next Scan:"):
+        display_text = next_scan_dt_obj # Already formatted
+    elif isinstance(next_scan_dt_obj, str): # If it's a string like "Initializing..."
+        display_text = f"Next Scan: {next_scan_dt_obj}"
+    else:
+        display_text = f"Next Scan: {str(next_scan_dt_obj)}" # Fallback
 
-    print("BG Scanner: Thread started (scans ALL active profiles).")
+    next_scan_time_str = display_text # Keep global string updated
+
+    # Update Tkinter StringVar if GUI elements are initialized
+    if root_window and next_scan_time_display_var:
+        root_window.after(0, lambda: next_scan_time_display_var.set(display_text))
+    # This print is for debugging
+    print(f"BG Scanner: Next scan time UI string set to: {display_text}")
+
+# --- Background Scanner Worker (with dynamic scheduling) ---
+def hourly_scan_worker():
+    global scanner_active, root_window, next_scan_time_str # Include next_scan_time_str
+    try:
+        print("BG Scanner: Initializing DB for worker thread...")
+        conn_init, cursor_init = connect_db()
+        create_tables(cursor_init); conn_init.commit()
+        add_predefined_profiles(conn_init, cursor_init) # Ensures 7 profiles exist
+        conn_init.close(); print("BG Scanner: DB setup confirmed for worker thread.")
+    except Exception as e:
+        print(f"BG Scanner: DB setup error: {e}. Thread stopping."); return
+
+    print("BG Scanner: Thread started with new dynamic scheduling.")
+
     while scanner_active:
+        now = datetime.datetime.now()
+        today_weekday = now.weekday() # Monday is 0 and Sunday is 6
+        next_scan_dt = None
+
+        # --- Calculate next scan time based on rules ---
+        # Weekdays: Monday (0) to Friday (4)
+        if 0 <= today_weekday <= 4:
+            time_1630_today = now.replace(hour=16, minute=30, second=0, microsecond=0)
+            time_2315_today = now.replace(hour=23, minute=15, second=0, microsecond=0)
+
+            if time_1630_today <= now < time_2315_today:
+                # Current time is Mon-Fri, 16:30 to 23:14:59. Scan every 15 mins.
+                next_scan_dt = now + datetime.timedelta(minutes=15)
+                # If 15 mins pushes it past 23:15, cap at 23:15 today.
+                if next_scan_dt > time_2315_today:
+                    next_scan_dt = time_2315_today
+            else:
+                # Current time is Mon-Fri, (00:00 to 16:29:59) OR (23:15 to 23:59:59) -> 4-hour scan window.
+                potential_next_scan = now + datetime.timedelta(hours=4)
+
+                if now < time_1630_today: # Current time is 00:00 to 16:29:59
+                    # If 4 hours from now is still before 16:30 today
+                    if potential_next_scan < time_1630_today:
+                        next_scan_dt = potential_next_scan
+                    else: # Otherwise, the next scan is at 16:30 today
+                        next_scan_dt = time_1630_today
+                else: # Current time is 23:15 to 23:59:59 (Friday night or other weekday night)
+                        # The 4-hour scan will be on the next day.
+                    next_day_datetime = now + datetime.timedelta(days=1)
+                    next_day_weekday = next_day_datetime.weekday()
+
+                    # Default next target is 16:30 on the next weekday, or 17:00 on the next weekend day.
+                    if 0 <= next_day_weekday <= 4: # Next day is a weekday (e.g. Mon-Fri)
+                        target_time_next_day = next_day_datetime.replace(hour=16, minute=30, second=0, microsecond=0)
+                    else: # Next day is a weekend (Saturday)
+                        target_time_next_day = next_day_datetime.replace(hour=17, minute=0, second=0, microsecond=0)
+
+                    if potential_next_scan < target_time_next_day:
+                        next_scan_dt = potential_next_scan
+                    else:
+                        next_scan_dt = target_time_next_day
+
+        # Weekends: Saturday (5) or Sunday (6)
+        else:
+            time_1700_today = now.replace(hour=17, minute=0, second=0, microsecond=0)
+            time_2300_today = now.replace(hour=23, minute=0, second=0, microsecond=0)
+
+            if now < time_1700_today:
+                next_scan_dt = time_1700_today
+            elif now < time_2300_today:
+                next_scan_dt = time_2300_today
+            else: # After 23:00 on a weekend
+                next_day_datetime = now + datetime.timedelta(days=1)
+                next_day_weekday = next_day_datetime.weekday() # This will be Sunday or Monday
+
+                if next_day_weekday == 0: # Next day is Monday
+                    next_scan_dt = next_day_datetime.replace(hour=16, minute=30, second=0, microsecond=0)
+                else: # Next day is Sunday (coming from Sat 23:xx) or still weekend (manual time change)
+                    next_scan_dt = next_day_datetime.replace(hour=17, minute=0, second=0, microsecond=0)
+
+        if not next_scan_dt: # Fallback, should ideally not be reached
+            print(f"[{datetime.datetime.now()}] BG Scanner: CRITICAL ERROR - Next scan time determination failed. Defaulting to 1 hour from now.")
+            next_scan_dt = now + datetime.timedelta(hours=1)
+
+        update_next_scan_time_label_for_worker(next_scan_dt) # Update global string
+
+        # Perform the scan
         print(f"\n[{datetime.datetime.now()}] BG Scanner: Starting scheduled scan (ALL active)...")
         try:
-            scanner.scan_and_update_all_active_profiles()
-            print(f"[{datetime.datetime.now()}] BG Scanner: Hourly scan (ALL active) complete.")
-            if root_window and scanner_active: root_window.after(0, refresh_all_gui_data)
-        except Exception as e: print(f"[{datetime.datetime.now()}] BG Scanner: Error during scan (ALL active): {e}")
+            # Ensure scanner and its functions are available
+            if 'scanner' in globals() and hasattr(scanner, 'scan_and_update_all_active_profiles'):
+                scanner.scan_and_update_all_active_profiles()
+                print(f"[{datetime.datetime.now()}] BG Scanner: Scan complete.")
+            else:
+                print(f"[{datetime.datetime.now()}] BG Scanner: ERROR - scanner module or scan_and_update_all_active_profiles function not found.")
+        except Exception as e:
+            print(f"[{datetime.datetime.now()}] BG Scanner: Error during scan: {e}")
 
-        sleep_duration = 3600 # FINAL: 1 hour (3600 seconds)
-        # sleep_duration = 15 # TEST: Short duration for testing
+        # Calculate sleep duration
+        current_time_before_sleep = datetime.datetime.now()
+        sleep_duration = (next_scan_dt - current_time_before_sleep).total_seconds()
 
-        # Updated print message to reflect actual sleep duration
-        print(f"[{datetime.datetime.now()}] BG Scanner: Next scan in {sleep_duration // 3600} hour(s) ({sleep_duration} seconds).")
+        if sleep_duration <= 0:
+            print(f"[{datetime.datetime.now()}] BG Scanner: Calculated next scan time {next_scan_dt.strftime('%Y-%m-%d %H:%M:%S')} is in the past or now. Scanning again in 60s.")
+            sleep_duration = 60
+
+        print(f"[{datetime.datetime.now()}] BG Scanner: Next scan scheduled at {next_scan_dt.strftime('%Y-%m-%d %H:%M:%S')}. Sleeping for {sleep_duration:.2f} seconds.")
 
         # Interruptible sleep
-        chunk_sleep = 5 # Check every 5 seconds
-        num_chunks = sleep_duration // chunk_sleep
-        for i in range(num_chunks):
+        chunk_sleep = 5
+        num_chunks = int(sleep_duration // chunk_sleep)
+        remainder_sleep = sleep_duration % chunk_sleep
+
+        for _ in range(num_chunks):
             if not scanner_active: break
             time.sleep(chunk_sleep)
-        # Remainder sleep if sleep_duration wasn't perfectly divisible by chunk_sleep
-        if scanner_active and (sleep_duration % chunk_sleep > 0) :
-            time.sleep(sleep_duration % chunk_sleep)
+
+        if scanner_active and remainder_sleep > 0:
+            time.sleep(remainder_sleep)
+
+        if scanner_active and root_window:
+            # Ensure refresh_all_gui_data is available
+            if 'refresh_all_gui_data' in globals():
+                root_window.after(0, refresh_all_gui_data)
+            else:
+                print(f"[{datetime.datetime.now()}] BG Scanner: ERROR - refresh_all_gui_data function not found for UI update.")
 
     print("BG Scanner: Thread stopped.")
 
@@ -234,9 +343,10 @@ def on_closing(): global scanner_active,root_window; scanner_active=False; print
 def create_main_window():
     global root_window, holdings_tree, tradelog_tree, profiles_listbox, notebook, comparison_tree, all_scanned_stocks_tree
     global total_return_label_var, total_trades_label_var, winning_trades_label_var, losing_trades_label_var
-    global buy_rule_text_var, sell_rule_text_var
+    global buy_rule_text_var, sell_rule_text_var, next_scan_time_display_var # Added next_scan_time_display_var
 
     root = tk.Tk(); root_window = root
+    next_scan_time_display_var = tk.StringVar(value="Next Scan: Initializing...") # Initialize StringVar
     root.title("Zacks Stock Analyzer"); root.geometry("1400x950"); root.protocol("WM_DELETE_WINDOW", on_closing)
     top_controls_frame=ttk.Frame(root,padding="5"); top_controls_frame.pack(side=tk.TOP,fill=tk.X,pady=(5,0))
     profiles_frame_cont=ttk.LabelFrame(top_controls_frame,text="Investor Profiles",padding="10"); profiles_frame_cont.pack(side=tk.LEFT,padx=5,fill=tk.Y)
@@ -250,6 +360,11 @@ def create_main_window():
     ttk.Button(prof_btn_frm,text="Edit Notes",command=lambda:open_profile_editor_window(selected_profile_id) if selected_profile_id is not None else messagebox.showinfo("Info","Select profile to edit.")).pack(side=tk.LEFT,expand=True,fill=tk.X)
     ttk.Button(prof_btn_frm,text="Del Profile",command=delete_selected_profile).pack(side=tk.LEFT,expand=True,fill=tk.X)
     global_actions_frame=ttk.Frame(top_controls_frame,padding="10"); global_actions_frame.pack(side=tk.LEFT,padx=5,expand=True,fill=tk.X,anchor='n')
+
+    # ADD THE NEW LABEL HERE:
+    next_scan_label = ttk.Label(global_actions_frame, textvariable=next_scan_time_display_var, font=('Helvetica', 9, 'italic'))
+    next_scan_label.pack(pady=(0,10), side=tk.TOP, anchor=tk.W) # Pack it at the top of this frame, align West
+
     ttk.Button(global_actions_frame,text="Refresh All Displayed Data",command=refresh_all_gui_data).pack(pady=5,fill=tk.X)
     ttk.Button(global_actions_frame,text="Manual Scan ALL Active Profiles",command=trigger_manual_scan_all_active).pack(pady=5,fill=tk.X)
 
@@ -297,6 +412,19 @@ def create_main_window():
     root.mainloop()
 
 if __name__ == "__main__":
-    print("Main: Init app & scanner thread..."); scan_thread = threading.Thread(target=hourly_scan_worker, daemon=True); scan_thread.start()
-    create_main_window()
-    print("Main: GUI closed."); scanner_active = False; print("Main: Exiting.")
+    global next_scan_time_str, scanner_active # scanner_active was already global here
+    next_scan_time_str = "Initializing scan schedule..."
+    update_next_scan_time_label_for_worker(next_scan_time_str) # Call it here
+
+    print("Main: Init app & scanner thread...");
+    # Ensure threading is imported (already imported at the top)
+    scan_thread = threading.Thread(target=hourly_scan_worker, daemon=True)
+    scan_thread.start()
+    # Ensure create_main_window is available
+    if 'create_main_window' in globals():
+        create_main_window()
+    else:
+        print("Main: ERROR - create_main_window function not found.")
+    print("Main: GUI closed.");
+    scanner_active = False;
+    print("Main: Exiting.")
