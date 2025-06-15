@@ -412,7 +412,6 @@ def create_main_window():
     root.mainloop()
 
 if __name__ == "__main__":
-    global next_scan_time_str, scanner_active # Declaration before assignment
     next_scan_time_str = "Initializing scan schedule..." # Assignment
     update_next_scan_time_label_for_worker(next_scan_time_str) # Use after assignment
 
